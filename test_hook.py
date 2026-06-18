@@ -80,16 +80,28 @@ tests = [
         "expected_decision": "deny"
     },
     {
-        "name": "Deny Destructive Command",
+        "name": "Deny Destructive Command (sudo su)",
+        "payload": {
+            "cwd": "/Users/knoxanderson/.gemini/jetski/scratch/claude-model-armor",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "sudo su"
+            },
+            "tool_use_id": "test-6"
+        },
+        "expected_decision": "deny"
+    },
+    {
+        "name": "Ask Destructive Command (rm -rf)",
         "payload": {
             "cwd": "/Users/knoxanderson/.gemini/jetski/scratch/claude-model-armor",
             "tool_name": "Bash",
             "tool_input": {
                 "command": "rm -rf /"
             },
-            "tool_use_id": "test-6"
+            "tool_use_id": "test-7"
         },
-        "expected_decision": "deny"
+        "expected_decision": "ask"
     }
 ]
 

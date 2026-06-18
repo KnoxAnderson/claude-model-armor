@@ -164,6 +164,23 @@ def scan_text_with_model_armor(text: str) -> str:
         logger.error(f"Error calling Model Armor: {e}")
     return None
 
+def expand_expression(expr: str, macros: dict) -> str:
+    import re
+    current = expr
+    changed = True
+    iterations = 0
+    max_iterations = 20
+    while changed and iterations < max_iterations:
+        changed = False
+        iterations += 1
+        for name, value in macros.items():
+            pattern = r'\b' + re.escape(name) + r'\b'
+            new_expr, count = re.subn(pattern, f"({value})", current)
+            if count > 0:
+                current = new_expr
+                changed = True
+    return current
+
 def run_hook():
     try:
         # Read stdin
@@ -206,23 +223,35 @@ def run_hook():
             }
         }
         
-        # Load rules from rules.yaml
+        # Load rules, lists and macros from rules.yaml
         rules_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules.yaml")
         rules = []
+        lists = {}
+        macros = {}
         if os.path.exists(rules_path):
             with open(rules_path, "r") as f:
-                rules_config = yaml.safe_load(f)
+                rules_config = yaml.safe_load(f) or {}
+                for item in rules_config.get("lists", []):
+                    lists[item["name"]] = item.get("items", [])
+                for item in rules_config.get("macros", []):
+                    macros[item["name"]] = item.get("expression", "")
                 rules = rules_config.get("rules", [])
         
+        # Inject lists into CEL evaluation context
+        cel_context_dict = {**context}
+        for list_name, list_items in lists.items():
+            cel_context_dict[list_name] = list_items
+            
         # Evaluate CEL rules
         env = celpy.Environment()
         decision = "allow"
         reason = ""
         
-        cel_context = celpy.json_to_cel(context)
+        cel_context = celpy.json_to_cel(cel_context_dict)
         
         for rule in rules:
-            expr = rule.get("expression", "")
+            expr_raw = rule.get("expression", "")
+            expr = expand_expression(expr_raw, macros)
             action = rule.get("action", "allow")
             rule_name = rule.get("name", "")
             msg_tmpl = rule.get("message", "")

@@ -4,3 +4,5 @@ venv/
 *benchmark*
 run_benchmark.sh
 run_swebench_eval.py
+cel_rules.yaml
+
