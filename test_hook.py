@@ -4,7 +4,7 @@ import sys
 
 def run_test(payload):
     p = subprocess.Popen(
-        [sys.executable, "model_armor_server.py", "--hook"],
+        ["./claude-model-armor", "--hook"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

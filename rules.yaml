@@ -1,1075 +1,931 @@
+# =========================================================================
+# SECTION 1: GLOBAL LISTS
+# Reusable path, name, and config patterns used by security macros and rules.
+# =========================================================================
+
 lists:
-- name: sensitive_paths
-  items:
-  - /etc/
-  - /private/etc/
-  - /root/
-  - /var/
-  - /private/var/
-  - /boot/
-  - /proc/
-  - /sys/
-- name: sensitive_file_names
-  items:
-  - .env
-  - .env.local
-  - .env.production
-  - .netrc
-  - .npmrc
-  - credentials.json
-  - token.json
-- name: shell_startup_files
-  items:
-  - .bashrc
-  - .zshrc
-  - .profile
-  - .bash_profile
-  - .zprofile
-  - .bash_login
-  - .bash_logout
-- name: agent_instruction_files
-  items:
-  - .cursorrules
-  - .windsurfrules
-  - .aiderrules
-  - AGENTS.md
-- name: env_file_names
-  items:
-  - .env
-  - .envrc
-  - .env.local
-  - .env.development
-  - .env.production
-  - .env.staging
-  - .env.test
-  - .env.ci
-  - .env.override
-- name: registry_config_files
-  items:
-  - .npmrc
-  - .pypirc
-  - pip.conf
-  - .pnpmrc
-  - .yarnrc.yml
+  # Sensitive paths that agents should not be read from or written to.
+  - name: sensitive_paths
+    items:
+      - /etc/
+      - /private/etc/
+      - /root/
+      - /var/
+      - /private/var/
+      - /boot/
+      - /proc/
+      - /sys/
+
+  # Individual sensitive files that often contain API keys, credentials, or session tokens.
+  - name: sensitive_file_names
+    items:
+      - .env
+      - .env.local
+      - .env.production
+      - .netrc
+      - .npmrc
+      - credentials.json
+      - token.json
+
+  # Shell configuration files that execute commands automatically upon shell login.
+  - name: shell_startup_files
+    items:
+      - .bashrc
+      - .zshrc
+      - .profile
+      - .bash_profile
+      - .zprofile
+      - .bash_login
+      - .bash_logout
+
+  # Files where LLM agents read custom rules or instructions.
+  - name: agent_instruction_files
+    items:
+      - .cursorrules
+      - .windsurfrules
+      - .aiderrules
+      - AGENTS.md
+
+  # Environment configuration file patterns.
+  - name: env_file_names
+    items:
+      - .env
+      - .envrc
+      - .env.local
+      - .env.development
+      - .env.production
+      - .env.staging
+      - .env.test
+      - .env.ci
+      - .env.override
+
+  # Package manager registry configuration files.
+  - name: registry_config_files
+    items:
+      - .npmrc
+      - .pypirc
+      - pip.conf
+      - .pnpmrc
+      - .yarnrc.yml
+
+# =========================================================================
+# SECTION 2: MACROS
+# Common Expression Language (CEL) building blocks for security validation.
+# =========================================================================
+
 macros:
-- name: is_claude_write_tool
-  expression: tool.name in ["Write", "Edit"]
-- name: is_codex_patch_write
-  expression: tool.name == "apply_patch" && tool.patch_op in ["Add", "Update", "Delete",
-    "Move"]
-- name: is_write_tool
-  expression: is_claude_write_tool || is_codex_patch_write
-- name: is_sensitive_path
-  expression: sensitive_paths.exists(p, tool.real_file_path.startsWith(p)) || tool.real_file_path
-    .contains("/.ssh/") || tool.real_file_path .contains("/.gnupg/") || tool.real_file_path
-    .contains("/.aws/") || tool.real_file_path .contains("/.azure/") || tool.real_file_path
-    .contains("/.config/gcloud/") || tool.real_file_path .contains("/.kube/") || tool.real_file_path
-    .contains("/.docker/") || tool.file_name in sensitive_file_names
-- name: is_outside_cwd
-  expression: '! tool.real_file_path .startsWith(agent.real_cwd)'
-- name: is_claude_data_path
-  expression: tool.real_file_path .contains("/.claude/")
-- name: contains_ioc_domain
-  expression: tool.input .contains("pastebin.com") || tool.input .contains("transfer.sh")
-    || tool.input .contains("file.io") || tool.input .contains("termbin.com") || tool.input
-    .contains("ix.io") || tool.input .contains("glot.io") || tool.input .contains("hastebin.com")
-    || tool.input .contains("ghostbin.co")
-- name: cmd_contains_ioc_domain
-  expression: tool.input_command .contains("pastebin.com") || tool.input_command .contains("transfer.sh")
-    || tool.input_command .contains("file.io") || tool.input_command .contains("termbin.com")
-    || tool.input_command .contains("ix.io") || tool.input_command .contains("glot.io")
-    || tool.input_command .contains("hastebin.com") || tool.input_command .contains("ghostbin.co")
-- name: is_agent_sandbox_config
-  expression: tool.real_file_path .endsWith("/.claude/settings.json") || tool.real_file_path
-    .endsWith("/.claude/settings.local.json") || tool.real_file_path .endsWith("/.codex/config.toml")
-    || tool.real_file_path .endsWith("/.gemini/settings.json")
-- name: is_sandbox_disable_codex
-  expression: tool.input .contains("danger-full-access")
-- name: is_sandbox_disable_enabled_false
-  expression: tool.input .contains("sandbox") && tool.input .contains("false")
-- name: is_sandbox_toolsandboxing_false
-  expression: tool.input .contains("toolSandboxing") && tool.input .contains("false")
-- name: is_sandbox_allow_unsandboxed
-  expression: tool.input .contains("allowUnsandboxedCommands") && tool.input .contains("true")
-- name: is_sandbox_allow_unsandboxed_numeric
-  expression: 'tool.input .contains("allowUnsandboxedCommands") && (tool.input .contains(":1")
-    || tool.input .contains(": 1"))'
-- name: is_sandbox_disable_value_change
-  expression: tool.input .contains("enabled") && tool.input .contains("false")
-- name: is_sandbox_disable_value_zero
-  expression: 'tool.input .contains("enabled") && (tool.input .contains(":0") || tool.input
-    .contains(": 0"))'
-- name: is_sandbox_disable_value_null
-  expression: tool.input .contains("enabled") && tool.input .contains("null")
-- name: is_sandbox_disable_gemini_none
-  expression: tool.input .contains("sandbox") && tool.input .contains("none")
-- name: is_sandbox_disable_gemini_disabled
-  expression: tool.input .contains("sandbox") && tool.input .contains("disabled")
-- name: is_sandbox_disable_content
-  expression: is_sandbox_disable_codex || is_sandbox_disable_enabled_false || is_sandbox_toolsandboxing_false
-    || is_sandbox_allow_unsandboxed || is_sandbox_allow_unsandboxed_numeric || is_sandbox_disable_value_change
-    || is_sandbox_disable_value_zero || is_sandbox_disable_value_null || is_sandbox_disable_gemini_none
-    || is_sandbox_disable_gemini_disabled
-- name: is_bash_sandbox_settings_path
-  expression: tool.input_command .contains(".claude/settings.json") || tool.input_command
-    .contains(".claude/settings.local.json") || tool.input_command .contains(".codex/config.toml")
-    || tool.input_command .contains(".gemini/settings.json")
-- name: is_bash_disable_codex
-  expression: tool.input_command .contains("danger-full-access")
-- name: is_bash_disable_sandbox_false
-  expression: tool.input_command .contains("sandbox") && tool.input_command .contains("false")
-- name: is_bash_disable_sandbox_false_pyfalse
-  expression: tool.input_command .contains("sandbox") && tool.input_command .contains("False")
-- name: is_bash_disable_sandbox_null
-  expression: tool.input_command .contains("sandbox") && tool.input_command .contains("null")
-- name: is_bash_disable_enabled_zero
-  expression: 'tool.input_command .contains("enabled") && (tool.input_command .contains(":0")
-    || tool.input_command .contains(": 0"))'
-- name: is_bash_disable_toolsandboxing_false
-  expression: tool.input_command .contains("toolSandboxing") && tool.input_command
-    .contains("false")
-- name: is_bash_disable_allow_unsandboxed
-  expression: tool.input_command .contains("allowUnsandboxedCommands") && tool.input_command
-    .contains("true")
-- name: is_bash_disable_allow_unsandboxed_numeric
-  expression: 'tool.input_command .contains("allowUnsandboxedCommands") && (tool.input_command
-    .contains(":1") || tool.input_command .contains(": 1"))'
-- name: is_bash_disable_sandbox_none
-  expression: tool.input_command .contains("sandbox") && tool.input_command .contains("none")
-- name: is_bash_disable_sandbox_disabled
-  expression: tool.input_command .contains("sandbox") && tool.input_command .contains("disabled")
-- name: is_bash_sandbox_disable_cmd
-  expression: is_bash_disable_codex || is_bash_disable_sandbox_false || is_bash_disable_sandbox_false_pyfalse
-    || is_bash_disable_sandbox_null || is_bash_disable_enabled_zero || is_bash_disable_toolsandboxing_false
-    || is_bash_disable_allow_unsandboxed || is_bash_disable_allow_unsandboxed_numeric
-    || is_bash_disable_sandbox_none || is_bash_disable_sandbox_disabled
-- name: is_bash_settings_sed_write
-  expression: tool.input_command .contains("sed") && tool.input_command .contains("-i")
-    && is_bash_sandbox_settings_path
-- name: is_bash_settings_cp
-  expression: tool.input_command .contains("cp ") && is_bash_sandbox_settings_path
-- name: is_bash_settings_mv
-  expression: tool.input_command .contains("mv ") && is_bash_sandbox_settings_path
-- name: is_bash_sandbox_settings_replace
-  expression: is_bash_settings_sed_write || is_bash_settings_cp || is_bash_settings_mv
-- name: is_codex_bypass_flag
-  expression: tool.input_command .contains("dangerously-bypass-approvals-&&-sandbox")
-- name: is_codex_bypass_flag_underscore
-  expression: tool.input_command .contains("dangerously_bypass_approvals_and_sandbox")
-- name: is_codex_danger_flag
-  expression: tool.input_command .contains("codex") && tool.input_command .contains("danger-full-access")
-- name: is_codex_sandbox_bypass
-  expression: is_codex_bypass_flag || is_codex_bypass_flag_underscore || is_codex_danger_flag
-- name: is_gemini_env_none
-  expression: tool.input_command .contains("GEMINI_SANDBOX") && tool.input_command
-    .contains("none")
-- name: is_gemini_env_false
-  expression: tool.input_command .contains("GEMINI_SANDBOX") && tool.input_command
-    .contains("false")
-- name: is_gemini_env_disabled
-  expression: tool.input_command .contains("GEMINI_SANDBOX") && tool.input_command
-    .contains("disabled")
-- name: is_gemini_env_zero
-  expression: tool.input_command .contains("GEMINI_SANDBOX") && (tool.input_command
-    .contains("==0") || tool.input_command .contains("== 0"))
-- name: is_gemini_sandbox_env_bypass
-  expression: is_gemini_env_none || is_gemini_env_false || is_gemini_env_disabled
-    || is_gemini_env_zero
-- name: is_bash
-  expression: tool.name == "Bash"
-- name: references_credential
-  expression: tool.input_command .contains(".aws/credentials") || tool.input_command
-    .contains(".aws/config") || tool.input_command .contains("/.ssh/id_rsa") || tool.input_command
-    .contains("/.ssh/id_ed25519") || tool.input_command .contains("/.ssh/id_ecdsa")
-    || tool.input_command .contains("/.gnupg/") || tool.input_command .contains("/.netrc")
-    || tool.input_command .contains("/.npmrc") || tool.input_command .contains("/.docker/config.json")
-    || tool.input_command .contains("credentials.json") || tool.input_command .contains("AWS_SECRET_ACCESS_KEY")
-    || tool.input_command .contains("GITHUB_TOKEN") || tool.input_command .contains("ANTHROPIC_API_KEY")
-    || tool.input_command .contains("OPENAI_API_KEY")
-- name: is_pipe_to_shell
-  expression: tool.input_command .contains("| bash") || tool.input_command .contains("|bash")
-    || tool.input_command .contains("| sh") || tool.input_command .contains("|sh")
-    || tool.input_command .contains("| zsh") || tool.input_command .contains("|zsh")
-    || tool.input_command .contains("bash <(") || tool.input_command .contains("sh
-    <(") || tool.input_command .contains("| /bin/bash") || tool.input_command .contains("|/bin/bash")
-    || tool.input_command .contains("| /bin/sh") || tool.input_command .contains("|/bin/sh")
-    || tool.input_command .contains("| /usr/bin/bash") || tool.input_command .contains("|/usr/bin/bash")
-    || tool.input_command .contains("| /usr/bin/sh") || tool.input_command .contains("|/usr/bin/sh")
-- name: is_encoded_exec
-  expression: tool.input_command .contains("base64 -d") || tool.input_command .contains("base64
-    --decode") || tool.input_command .contains("base64 -D") || tool.input_command
-    .contains("openssl base64 -d") || tool.input_command .contains("xxd -r") || tool.input_command
-    .contains("python3 -c") || tool.input_command .contains("python -c") || tool.input_command
-    .contains("perl -e") || tool.input_command .contains("ruby -e") || tool.input_command
-    .contains("node -e") || tool.input_command .contains("node --eval") || tool.input_command
-    .contains("php -r")
-- name: is_curl_exfil
-  expression: (tool.input_command .contains("curl ") || tool.input_command .contains("wget
-    ")) && (tool.input_command .contains(" -d ") || tool.input_command .contains("
-    --data") || tool.input_command .contains(" -F ") || tool.input_command .contains("
-    --form") || tool.input_command .contains(" -T ") || tool.input_command .contains("
-    --upload-file") || tool.input_command .contains("@/tmp/") || tool.input_command
-    .contains("@/var/") || tool.input_command .contains("| curl") || tool.input_command
-    .contains("| wget"))
-- name: is_destructive_command
-  expression: tool.input_command .contains("dd if==") || tool.input_command .contains("dd
-    of==") || tool.input_command .contains("mkfs") || tool.input_command .contains(">
-    /dev/sda") || tool.input_command .contains("init 0") || tool.input_command .contains("sudo
-    su") || tool.input_command .contains("sudo -i")
-- name: is_likely_destructive_command
-  expression: tool.input_command .contains("rm -rf") || tool.input_command .contains("rm
-    -fr") || tool.input_command .contains("rm --recursive") || tool.input_command
-    .contains("sudo rm ") || tool.input_command .startsWith("shutdown -") || tool.input_command
-    .startsWith("shutdown now") || tool.input_command .startsWith("shutdown +") ||
-    tool.input_command .contains("; shutdown -") || tool.input_command .contains(";
-    shutdown now") || tool.input_command .contains("&& shutdown -") || tool.input_command
-    .contains("&& shutdown now") || tool.input_command .contains("| shutdown -") ||
-    tool.input_command .contains("/sbin/shutdown") || tool.input_command .contains("sudo
-    shutdown") || tool.input_command .contains("systemctl poweroff") || tool.input_command
-    .startsWith("reboot") || tool.input_command .contains("; reboot") || tool.input_command
-    .contains("&& reboot") || tool.input_command .contains("/sbin/reboot") || tool.input_command
-    .contains("sudo reboot") || tool.input_command .contains("systemctl reboot") ||
-    tool.input_command .startsWith("halt") || tool.input_command .contains("; halt")
-    || tool.input_command .contains("&& halt") || tool.input_command .contains("/sbin/halt")
-    || tool.input_command .contains("sudo halt") || tool.input_command .contains("systemctl
-    halt")
-- name: is_pure_search_or_print_command
-  expression: (tool.input_command .startsWith("rg ") || tool.input_command .startsWith("grep
-    ") || tool.input_command .startsWith("ag ") || tool.input_command .startsWith("find
-    ") || tool.input_command .startsWith("git grep ") || tool.input_command .startsWith("git
-    log ") || tool.input_command .startsWith("git show ") || tool.input_command .startsWith("git
-    diff") || tool.input_command .startsWith("echo ") || tool.input_command .startsWith("printf
-    ") || tool.input_command .startsWith("cat ")) && ! tool.input_command .contains("&&")
-    && ! tool.input_command .contains("||") && ! tool.input_command .contains(";")
-    && ! tool.input_command .contains("$(") && ! tool.input_command .contains("`")
-- name: is_tmp_path
-  expression: tool.real_file_path .startsWith("/tmp/") || tool.real_file_path .startsWith("/var/tmp/")
-    || tool.real_file_path .startsWith("/dev/shm/")
-- name: is_read_credential_path
-  expression: tool.name == "Read" && tool.real_file_path != "" && (tool.real_file_path
-    .contains("/.aws/credentials") || tool.real_file_path .contains("/.aws/config")
-    || tool.real_file_path .contains("/.ssh/id_rsa") || tool.real_file_path .contains("/.ssh/id_ed25519")
-    || tool.real_file_path .contains("/.ssh/id_ecdsa") || tool.real_file_path .contains("/.gnupg/")
-    || tool.real_file_path .contains("/.netrc") || tool.real_file_path .contains("/.docker/config.json"))
-- name: is_reverse_shell_mkfifo_nc
-  expression: tool.input_command .contains("mkfifo") && tool.input_command .contains("
-    nc ")
-- name: is_reverse_shell
-  expression: tool.input_command .contains("/dev/tcp/") || tool.input_command .contains(">&/dev/tcp")
-    || tool.input_command .contains(">& /dev/tcp") || tool.input_command .contains("bash
-    -i") || tool.input_command .contains("nc -e") || tool.input_command .contains("nc
-    -c") || tool.input_command .contains("ncat --exec") || tool.input_command .contains("ncat
-    -e") || tool.input_command .contains("socat exec:") || is_reverse_shell_mkfifo_nc
-    || tool.input_command .contains("exec 5<>")
-- name: is_imds_access
-  expression: (tool.input_command .contains("curl ") || tool.input_command .contains("wget
-    ")) && (tool.input_command .contains("169.254.169.254") || tool.input_command
-    .contains("metadata.google.internal") || tool.input_command .contains("metadata.azure.com")
-    || tool.input_command .contains("fd00:ec2::254") || tool.input_command .contains("2852039166")
-    || tool.input_command .contains("0xa9fea9fe") || tool.input_command .contains("0Xa9fea9fe")
-    || tool.input_command .contains("0251.0376.0251.0376"))
-- name: is_credential_archive
-  expression: (tool.input_command .contains("tar ") || tool.input_command .contains("zip
-    ") || tool.input_command .contains("gzip ") || tool.input_command .contains("7z
-    ") || tool.input_command .contains("rar ")) && (tool.input_command .contains("/.aws")
-    || tool.input_command .contains("/.ssh") || tool.input_command .contains("/.gnupg")
-    || tool.input_command .contains("/.kube") || tool.input_command .contains("/.docker"))
-- name: is_ssh_tunnel
-  expression: tool.input_command .contains("ssh ") && (tool.input_command .contains("
-    -R ") || tool.input_command .contains(" -D ") || tool.input_command .contains("
-    -w "))
-- name: is_cron_persistence
-  expression: tool.input_command .contains("crontab -") || tool.input_command .contains("|
-    crontab") || tool.input_command .contains("/etc/cron")
-- name: is_history_wipe_rm_bash
-  expression: tool.input_command .contains("rm ") && tool.input_command .contains(".bash_history")
-- name: is_history_wipe_rm_zsh
-  expression: tool.input_command .contains("rm ") && tool.input_command .contains(".zsh_history")
-- name: is_history_wipe_truncate
-  expression: tool.input_command .contains("truncate ") && tool.input_command .contains("_history")
-- name: is_history_wipe
-  expression: tool.input_command .contains("history -c") || tool.input_command .contains("history
-    -w") || tool.input_command .contains("unset HISTFILE") || tool.input_command .contains("HISTSIZE==0")
-    || tool.input_command .contains("HISTFILESIZE==0") || is_history_wipe_rm_bash
-    || is_history_wipe_rm_zsh || is_history_wipe_truncate
-- name: is_package_publish
-  expression: tool.input_command .contains("npm publish") || tool.input_command .contains("twine
-    upload") || tool.input_command .contains("cargo publish") || tool.input_command
-    .contains("gem push") || tool.input_command .contains("pip upload")
-- name: is_gemini_auth_cross
-  expression: tool.real_file_path .contains("/.gemini/oauth_creds") && agent.name
-    != "gemini"
-- name: is_codex_auth_cross
-  expression: tool.real_file_path .contains("/.codex/auth") && agent.name != "codex"
-- name: is_cursor_auth_cross
-  expression: tool.real_file_path .contains("/.cursor/session") && agent.name != "cursor"
-- name: is_claude_auth_cross
-  expression: tool.real_file_path .contains("/.claude/oauth") && agent.name != "claude_code"
-- name: is_cross_agent_auth_read
-  expression: tool.name == "Read" && (is_gemini_auth_cross || is_codex_auth_cross
-    || is_cursor_auth_cross || is_claude_auth_cross)
-- name: is_mcp_install_from_untrusted
-  expression: (tool.input_command .contains("npx ") || tool.input_command .contains("npm
-    install") || tool.input_command .contains("uvx ") || tool.input_command .contains("pip
-    install") || tool.input_command .contains("claude skills install") || tool.input_command
-    .contains("claude plugin install")) && cmd_contains_ioc_domain
-- name: is_mcp_temp_path
-  expression: (tool.input_command .contains("/tmp/") || tool.input_command .contains("/dev/shm/")
-    || tool.input_command .contains("/var/tmp/")) && (tool.input_command .contains("--stdio")
-    || tool.input_command .contains("--sse"))
-- name: is_credential_glob
-  expression: tool.name == "Glob" && (tool.input .contains("/.aws/") || tool.input
-    .contains("/.ssh/") || tool.input .contains("/.gnupg/") || tool.input .contains("/.kube/")
-    || tool.input .contains("/id_rsa") || tool.input .contains("/id_ed25519") || tool.input
-    .contains("oauth_creds"))
-- name: is_container_privileged_flag
-  expression: tool.input_command .contains("--privileged")
-- name: is_container_cap_add
-  expression: tool.input_command .contains("--cap-add")
-- name: is_container_security_opt_unconfined
-  expression: tool.input_command .contains("seccomp==unconfined") || tool.input_command
-    .contains("apparmor==unconfined") || tool.input_command .contains("systempaths==unconfined")
-    || tool.input_command .contains("label==disable") || tool.input_command .contains("label:disable")
-- name: is_container_host_namespace
-  expression: tool.input_command .contains("--pid==host") || tool.input_command .contains("--pid
-    host") || tool.input_command .contains("--ipc==host") || tool.input_command .contains("--ipc
-    host") || tool.input_command .contains("--userns==host") || tool.input_command
-    .contains("--userns host") || tool.input_command .contains("--uts==host") || tool.input_command
-    .contains("--uts host") || tool.input_command .contains("--cgroupns==host") ||
-    tool.input_command .contains("--cgroupns host") || tool.input_command .contains("--network==host")
-    || tool.input_command .contains("--network host") || tool.input_command .contains("--net==host")
-    || tool.input_command .contains("--net host")
-- name: is_container_docker_socket
-  expression: tool.input_command .contains("docker.sock") || tool.input_command .contains("DOCKER_HOST==")
-- name: is_container_host_root_mount
-  expression: tool.input_command .contains("-v /:") || tool.input_command .contains("--volume
-    /:") || tool.input_command .contains("source==/,") || tool.input_command .contains("src==/,")
-- name: is_container_device_passthrough
-  expression: tool.input_command .contains("--device==/dev/") || tool.input_command
-    .contains("--device /dev/")
-- name: is_nsenter_host
-  expression: tool.input_command .contains("nsenter") && (tool.input_command .contains("-t
-    1") || tool.input_command .contains("--target 1") || tool.input_command .contains("-t1"))
-- name: is_container_privilege_escalation
-  expression: is_container_privileged_flag || is_container_cap_add || is_container_security_opt_unconfined
-    || is_container_host_namespace || is_container_docker_socket || is_container_host_root_mount
-    || is_container_device_passthrough || is_nsenter_host
-- name: is_mcp_config_write
-  expression: is_write_tool && tool.file_path != "" && (tool.file_name == ".mcp.json"
-    || tool.file_name == "managed-mcp.json")
-- name: is_mcp_command_temp
-  expression: tool.input .contains("/tmp/") || tool.input .contains("/dev/shm/") ||
-    tool.input .contains("/var/tmp/") || tool.input .contains("$TMPDIR") || tool.input
-    .contains("$TMP") || tool.input .contains("$TEMP") || tool.input .contains("/run/user/")
-- name: is_mcp_command_encoded
-  expression: tool.input .contains("base64")
-- name: is_mcp_self_register
-  expression: tool.input_command .contains("claude mcp add") || tool.input_command
-    .contains("claude mcp install") || tool.input_command .contains("claude mcp add-json")
-    || tool.input_command .contains("claude mcp add-from-claude-desktop") || tool.input_command
-    .contains("claude plugin install") || tool.input_command .contains("claude skill
-    add")
-- name: is_skill_commands_path
-  expression: tool.real_file_path .contains("/.claude/commands/")
-- name: is_skill_content_ioc
-  expression: is_skill_commands_path && contains_ioc_domain
-- name: is_skill_pipe_bash
-  expression: is_skill_commands_path && (tool.input .contains("| bash") || tool.input
-    .contains("|bash") || tool.input .contains("| sh") || tool.input .contains("|sh")
-    || tool.input .contains("bash <(") || tool.input .contains("sh <(") || tool.input
-    .contains("| /bin/bash") || tool.input .contains("|/bin/bash") || tool.input .contains("|
-    /bin/sh") || tool.input .contains("|/bin/sh") || tool.input .contains("| /usr/bin/bash")
-    || tool.input .contains("|/usr/bin/bash") || tool.input .contains("| /usr/bin/sh")
-    || tool.input .contains("|/usr/bin/sh"))
-- name: is_npx_auto_accept_mcp_skill
-  expression: (tool.input_command .contains("npx -y ") || tool.input_command .contains("npx
-    --yes ") || tool.input_command .contains("bunx -y ") || tool.input_command .contains("bunx
-    --yes ") || tool.input_command .contains("yarn dlx ") || tool.input_command .contains("pnpm
-    dlx ")) && (tool.input_command .contains("mcp") || tool.input_command .contains("skill")
-    || tool.input_command .contains("plugin") || tool.input_command .contains("modelcontextprotocol")
-    || tool.input_command .contains("@anthropic") || tool.input_command .contains("@openai")
-    || tool.input_command .contains("@google"))
-- name: is_bash_commands_write
-  expression: tool.name == "Bash" && tool.input_command .contains("/.claude/commands/")
-- name: is_claude_settings_write
-  expression: is_write_tool && tool.real_file_path != "" && (tool.real_file_path .endsWith("/.claude/settings.json")
-    || tool.real_file_path .endsWith("/.claude/settings.local.json"))
-- name: is_settings_hooks_content
-  expression: tool.input .contains("hooks")
-- name: is_settings_mcp_content
-  expression: tool.input .contains("mcpServers")
-- name: is_git_hooks_write
-  expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path .contains("/.git/hooks/")
-- name: is_bash_git_hooks_write
-  expression: tool.name == "Bash" && tool.input_command .contains("/.git/hooks/")
-- name: is_registry_config_write
-  expression: is_write_tool && tool.file_path != "" && tool.file_name in registry_config_files
-- name: is_registry_redirect_content
-  expression: tool.input .contains("registry==") || tool.input .contains("npmRegistryServer")
-    || tool.input .contains("index-url") || tool.input .contains("extra-index-url")
-    || tool.input .contains("index-server")
-- name: is_bash_npm_registry_redirect
-  expression: (tool.input_command .contains("npm config set registry") || tool.input_command
-    .contains("npm set registry"))
-- name: is_bash_pip_registry_redirect
-  expression: (tool.input_command .contains("pip config set") || tool.input_command
-    .contains("pip3 config set")) && (tool.input_command .contains("index-url") ||
-    tool.input_command .contains("extra-index-url"))
-- name: is_bash_registry_redirect
-  expression: is_bash_npm_registry_redirect || is_bash_pip_registry_redirect
-- name: is_env_file_write
-  expression: is_write_tool && tool.file_path != "" && tool.file_name in env_file_names
-- name: is_api_base_url_override
-  expression: tool.input .contains("ANTHROPIC_BASE_URL") || tool.input .contains("OPENAI_BASE_URL")
-    || tool.input .contains("OPENAI_API_BASE")
-- name: is_api_key_in_env
-  expression: tool.input .contains("ANTHROPIC_API_KEY") || tool.input .contains("OPENAI_API_KEY")
-    || tool.input .contains("GEMINI_API_KEY")
-- name: is_premptictl_invocation
-  expression: is_bash && tool.input_command .contains("premptictl")
-- name: is_service_stop_linux
-  expression: agent.os == "linux" && is_bash && ( tool.input_command .contains("systemctl
-    --user stop prempti") || tool.input_command .contains("systemctl --user disable
-    prempti") || tool.input_command .contains("systemctl stop prempti") || tool.input_command
-    .contains("systemctl disable prempti") || tool.input_command .contains("loginctl
-    disable-linger") || tool.input_command .contains("pkill falco") || tool.input_command
-    .contains("pkill -f falco") || tool.input_command .contains("killall falco") )
-- name: is_service_stop_macos
-  expression: agent.os == "macos" && is_bash && ( tool.input_command .contains("launchctl
-    unload") && tool.input_command .contains("prempti") || tool.input_command .contains("launchctl
-    bootout") && tool.input_command .contains("prempti") || tool.input_command .contains("launchctl
-    remove dev.falcosecurity.prempti") || tool.input_command .contains("pkill falco")
-    || tool.input_command .contains("pkill -f falco") || tool.input_command .contains("killall
-    falco") )
-- name: is_service_stop_windows
-  expression: agent.os == "windows" && is_bash && ( tool.input_command .contains("taskkill")
-    && tool.input_command .contains("falco") || tool.input_command .contains("Stop-Process")
-    && tool.input_command .contains("falco") || tool.input_command .contains("Stop-Service")
-    && tool.input_command .contains("falco") || (tool.input_command .contains("reg
-    delete") && tool.input_command .contains("Run") && tool.input_command .contains("prempti"))
-    )
-- name: is_prempti_install_path
-  expression: (agent.os in [linux, macos] && tool.real_file_path .contains("/.prempti/"))
-    || (agent.os == "windows" && tool.real_file_path.matches("(?i)/AppData/Local/prempti/"))
-- name: is_claude_settings_path
-  expression: tool.real_file_path .endsWith("/.claude/settings.json") || tool.real_file_path
-    .endsWith("/.claude/settings.local.json")
+  # Check if the tool being used is a native write/edit tool.
+  - name: is_claude_write_tool
+    expression: tool.name in ["Write", "Edit"]
+
+  # Check if the tool is Codex patch tool writing/modifying code.
+  - name: is_codex_patch_write
+    expression: tool.name == "apply_patch" && tool.patch_op in ["Add", "Update", "Delete", "Move"]
+
+  # General helper to identify any write operation.
+  - name: is_write_tool
+    expression: is_claude_write_tool || is_codex_patch_write
+
+  # Checks if the target file path resides in a sensitive location.
+  - name: is_sensitive_path
+    expression: >
+      sensitive_paths.exists(p, tool.real_file_path.startsWith(p)) ||
+      tool.real_file_path.contains("/.ssh/") ||
+      tool.real_file_path.contains("/.gnupg/") ||
+      tool.real_file_path.contains("/.aws/") ||
+      tool.real_file_path.contains("/.azure/") ||
+      tool.real_file_path.contains("/.config/gcloud/") ||
+      tool.real_file_path.contains("/.kube/") ||
+      tool.real_file_path.contains("/.docker/") ||
+      tool.file_name in sensitive_file_names
+
+  # Checks if the target path is outside the workspace CWD.
+  - name: is_outside_cwd
+    expression: '!tool.real_file_path.startsWith(agent.real_cwd)'
+
+  # Identifies Claude-specific data directory.
+  - name: is_claude_data_path
+    expression: tool.real_file_path.contains("/.claude/")
+
+  # Check tool input for known indicators of compromise (IOC) domains.
+  - name: contains_ioc_domain
+    expression: >
+      tool.input.contains("pastebin.com") || tool.input.contains("transfer.sh") ||
+      tool.input.contains("file.io") || tool.input.contains("termbin.com") ||
+      tool.input.contains("ix.io") || tool.input.contains("glot.io") ||
+      tool.input.contains("hastebin.com") || tool.input.contains("ghostbin.co")
+
+  # Check shell command input for known IOC domains.
+  - name: cmd_contains_ioc_domain
+    expression: >
+      tool.input_command.contains("pastebin.com") || tool.input_command.contains("transfer.sh") ||
+      tool.input_command.contains("file.io") || tool.input_command.contains("termbin.com") ||
+      tool.input_command.contains("ix.io") || tool.input_command.contains("glot.io") ||
+      tool.input_command.contains("hastebin.com") || tool.input_command.contains("ghostbin.co")
+
+  # Identifies agent settings configuration files that control sandboxing.
+  - name: is_agent_sandbox_config
+    expression: >
+      tool.real_file_path.endsWith("/.claude/settings.json") ||
+      tool.real_file_path.endsWith("/.claude/settings.local.json") ||
+      tool.real_file_path.endsWith("/.codex/config.toml") ||
+      tool.real_file_path.endsWith("/.gemini/settings.json")
+
+  # Sub-macros to detect parameters or options that disable sandboxing.
+  - name: is_sandbox_disable_codex
+    expression: tool.input.contains("danger-full-access")
+  - name: is_sandbox_disable_enabled_false
+    expression: tool.input.contains("sandbox") && tool.input.contains("false")
+  - name: is_sandbox_toolsandboxing_false
+    expression: tool.input.contains("toolSandboxing") && tool.input.contains("false")
+  - name: is_sandbox_allow_unsandboxed
+    expression: tool.input.contains("allowUnsandboxedCommands") && tool.input.contains("true")
+  - name: is_sandbox_allow_unsandboxed_numeric
+    expression: 'tool.input.contains("allowUnsandboxedCommands") && (tool.input.contains(":1") || tool.input.contains(": 1"))'
+  - name: is_sandbox_disable_value_change
+    expression: tool.input.contains("enabled") && tool.input.contains("false")
+  - name: is_sandbox_disable_value_zero
+    expression: 'tool.input.contains("enabled") && (tool.input.contains(":0") || tool.input.contains(": 0"))'
+  - name: is_sandbox_disable_value_null
+    expression: tool.input.contains("enabled") && tool.input.contains("null")
+  - name: is_sandbox_disable_gemini_none
+    expression: tool.input.contains("sandbox") && tool.input.contains("none")
+  - name: is_sandbox_disable_gemini_disabled
+    expression: tool.input.contains("sandbox") && tool.input.contains("disabled")
+
+  # Aggregated macro to detect sandboxing configuration disabling in file writes.
+  - name: is_sandbox_disable_content
+    expression: >
+      is_sandbox_disable_codex || is_sandbox_disable_enabled_false || is_sandbox_toolsandboxing_false ||
+      is_sandbox_allow_unsandboxed || is_sandbox_allow_unsandboxed_numeric || is_sandbox_disable_value_change ||
+      is_sandbox_disable_value_zero || is_sandbox_disable_value_null || is_sandbox_disable_gemini_none ||
+      is_sandbox_disable_gemini_disabled
+
+  # Checks if a shell command targets agent configuration paths.
+  - name: is_bash_sandbox_settings_path
+    expression: >
+      tool.input_command.contains(".claude/settings.json") ||
+      tool.input_command.contains(".claude/settings.local.json") ||
+      tool.input_command.contains(".codex/config.toml") ||
+      tool.input_command.contains(".gemini/settings.json")
+
+  # Sub-macros to detect sandbox bypass attempts in shell commands.
+  - name: is_bash_disable_codex
+    expression: tool.input_command.contains("danger-full-access")
+  - name: is_bash_disable_sandbox_false
+    expression: tool.input_command.contains("sandbox") && tool.input_command.contains("false")
+  - name: is_bash_disable_sandbox_false_pyfalse
+    expression: tool.input_command.contains("sandbox") && tool.input_command.contains("False")
+  - name: is_bash_disable_sandbox_null
+    expression: tool.input_command.contains("sandbox") && tool.input_command.contains("null")
+  - name: is_bash_disable_enabled_zero
+    expression: 'tool.input_command.contains("enabled") && (tool.input_command.contains(":0") || tool.input_command.contains(": 0"))'
+  - name: is_bash_disable_toolsandboxing_false
+    expression: tool.input_command.contains("toolSandboxing") && tool.input_command.contains("false")
+  - name: is_bash_disable_allow_unsandboxed
+    expression: tool.input_command.contains("allowUnsandboxedCommands") && tool.input_command.contains("true")
+  - name: is_bash_disable_allow_unsandboxed_numeric
+    expression: 'tool.input_command.contains("allowUnsandboxedCommands") && (tool.input_command.contains(":1") || tool.input_command.contains(": 1"))'
+  - name: is_bash_disable_sandbox_none
+    expression: tool.input_command.contains("sandbox") && tool.input_command.contains("none")
+  - name: is_bash_disable_sandbox_disabled
+    expression: tool.input_command.contains("sandbox") && tool.input_command.contains("disabled")
+
+  # Aggregated macro to detect sandboxing configuration disabling in shell commands.
+  - name: is_bash_sandbox_disable_cmd
+    expression: >
+      is_bash_disable_codex || is_bash_disable_sandbox_false || is_bash_disable_sandbox_false_pyfalse ||
+      is_bash_disable_sandbox_null || is_bash_disable_enabled_zero || is_bash_disable_toolsandboxing_false ||
+      is_bash_disable_allow_unsandboxed || is_bash_disable_allow_unsandboxed_numeric ||
+      is_bash_disable_sandbox_none || is_bash_disable_sandbox_disabled
+
+  # Checks if shell commands attempt to replace configuration files via inline tools.
+  - name: is_bash_settings_sed_write
+    expression: tool.input_command.contains("sed") && tool.input_command.contains("-i") && is_bash_sandbox_settings_path
+  - name: is_bash_settings_cp
+    expression: tool.input_command.contains("cp ") && is_bash_sandbox_settings_path
+  - name: is_bash_settings_mv
+    expression: tool.input_command.contains("mv ") && is_bash_sandbox_settings_path
+
+  # Aggregated macro for settings replacement.
+  - name: is_bash_sandbox_settings_replace
+    expression: is_bash_settings_sed_write || is_bash_settings_cp || is_bash_settings_mv
+
+  # Checks if Codex parameters try to bypass approvals/sandboxes.
+  - name: is_codex_bypass_flag
+    expression: tool.input_command.contains("dangerously-bypass-approvals-&&-sandbox")
+  - name: is_codex_bypass_flag_underscore
+    expression: tool.input_command.contains("dangerously_bypass_approvals_and_sandbox")
+  - name: is_codex_danger_flag
+    expression: tool.input_command.contains("codex") && tool.input_command.contains("danger-full-access")
+
+  # Aggregated macro for Codex bypass detection.
+  - name: is_codex_sandbox_bypass
+    expression: is_codex_bypass_flag || is_codex_bypass_flag_underscore || is_codex_danger_flag
+
+  # Detects Gemini sandbox bypass settings.
+  - name: is_gemini_env_none
+    expression: tool.input_command.contains("GEMINI_SANDBOX") && tool.input_command.contains("none")
+  - name: is_gemini_env_false
+    expression: tool.input_command.contains("GEMINI_SANDBOX") && tool.input_command.contains("false")
+  - name: is_gemini_env_disabled
+    expression: tool.input_command.contains("GEMINI_SANDBOX") && tool.input_command.contains("disabled")
+  - name: is_gemini_env_zero
+    expression: tool.input_command.contains("GEMINI_SANDBOX") && (tool.input_command.contains("==0") || tool.input_command.contains("== 0"))
+
+  # Aggregated macro for Gemini bypass detection.
+  - name: is_gemini_sandbox_env_bypass
+    expression: is_gemini_env_none || is_gemini_env_false || is_gemini_env_disabled || is_gemini_env_zero
+
+  # Helper macro to check if tool is Bash.
+  - name: is_bash
+    expression: tool.name == "Bash"
+
+  # Identifies command lines referencing credentials or API keys.
+  - name: references_credential
+    expression: >
+      tool.input_command.contains(".aws/credentials") || tool.input_command.contains(".aws/config") ||
+      tool.input_command.contains("/.ssh/id_rsa") || tool.input_command.contains("/.ssh/id_ed25519") ||
+      tool.input_command.contains("/.ssh/id_ecdsa") || tool.input_command.contains("/.gnupg/") ||
+      tool.input_command.contains("/.netrc") || tool.input_command.contains("/.npmrc") ||
+      tool.input_command.contains("/.docker/config.json") || tool.input_command.contains("credentials.json") ||
+      tool.input_command.contains("AWS_SECRET_ACCESS_KEY") || tool.input_command.contains("GITHUB_TOKEN") ||
+      tool.input_command.contains("ANTHROPIC_API_KEY") || tool.input_command.contains("OPENAI_API_KEY")
+
+  # Detects piping curl/wget content directly to shell interpreters.
+  - name: is_pipe_to_shell
+    expression: >
+      tool.input_command.contains("| bash") || tool.input_command.contains("|bash") ||
+      tool.input_command.contains("| sh") || tool.input_command.contains("|sh") ||
+      tool.input_command.contains("| zsh") || tool.input_command.contains("|zsh") ||
+      tool.input_command.contains("bash <(") || tool.input_command.contains("sh <(") ||
+      tool.input_command.contains("| /bin/bash") || tool.input_command.contains("|/bin/bash") ||
+      tool.input_command.contains("| /bin/sh") || tool.input_command.contains("|/bin/sh") ||
+      tool.input_command.contains("| /usr/bin/bash") || tool.input_command.contains("|/usr/bin/bash") ||
+      tool.input_command.contains("| /usr/bin/sh") || tool.input_command.contains("|/usr/bin/sh")
+
+  # Detects base64 or hex decoding inline execution.
+  - name: is_encoded_exec
+    expression: >
+      tool.input_command.contains("base64 -d") || tool.input_command.contains("base64 --decode") ||
+      tool.input_command.contains("base64 -D") || tool.input_command.contains("openssl base64 -d") ||
+      tool.input_command.contains("xxd -r") || tool.input_command.contains("python3 -c") ||
+      tool.input_command.contains("python -c") || tool.input_command.contains("perl -e") ||
+      tool.input_command.contains("ruby -e") || tool.input_command.contains("node -e") ||
+      tool.input_command.contains("node --eval") || tool.input_command.contains("php -r")
+
+  # Detects data exfiltration commands using curl or wget.
+  - name: is_curl_exfil
+    expression: >
+      (tool.input_command.contains("curl ") || tool.input_command.contains("wget ")) &&
+      (tool.input_command.contains(" -d ") || tool.input_command.contains(" --data") ||
+       tool.input_command.contains(" -F ") || tool.input_command.contains(" --form") ||
+       tool.input_command.contains(" -T ") || tool.input_command.contains(" --upload-file") ||
+       tool.input_command.contains("@/tmp/") || tool.input_command.contains("@/var/") ||
+       tool.input_command.contains("| curl") || tool.input_command.contains("| wget"))
+
+  # Identifies highly destructive commands that can format partitions or gain root.
+  - name: is_destructive_command
+    expression: >
+      tool.input_command.contains("dd if==") || tool.input_command.contains("dd of==") ||
+      tool.input_command.contains("mkfs") || tool.input_command.contains("> /dev/sda") ||
+      tool.input_command.contains("init 0") || tool.input_command.contains("sudo su") ||
+      tool.input_command.contains("sudo -i")
+
+  # Identifies commands likely meant to delete workspace or shut down the system.
+  - name: is_likely_destructive_command
+    expression: >
+      tool.input_command.contains("rm -rf") || tool.input_command.contains("rm -fr") ||
+      tool.input_command.contains("rm --recursive") || tool.input_command.contains("sudo rm ") ||
+      tool.input_command.startsWith("shutdown -") || tool.input_command.startsWith("shutdown now") ||
+      tool.input_command.startsWith("shutdown +") || tool.input_command.contains("; shutdown -") ||
+      tool.input_command.contains("; shutdown now") || tool.input_command.contains("&& shutdown -") ||
+      tool.input_command.contains("&& shutdown now") || tool.input_command.contains("| shutdown -") ||
+      tool.input_command.contains("/sbin/shutdown") || tool.input_command.contains("sudo shutdown") ||
+      tool.input_command.contains("systemctl poweroff") || tool.input_command.startsWith("reboot") ||
+      tool.input_command.contains("; reboot") || tool.input_command.contains("&& reboot") ||
+      tool.input_command.contains("/sbin/reboot") || tool.input_command.contains("sudo reboot") ||
+      tool.input_command.contains("systemctl reboot") || tool.input_command.startsWith("halt") ||
+      tool.input_command.contains("; halt") || tool.input_command.contains("&& halt") ||
+      tool.input_command.contains("/sbin/halt") || tool.input_command.contains("sudo halt") ||
+      tool.input_command.contains("systemctl halt")
+
+  # Helper macro to identify harmless search/print commands.
+  - name: is_pure_search_or_print_command
+    expression: >
+      (tool.input_command.startsWith("rg ") || tool.input_command.startsWith("grep ") ||
+       tool.input_command.startsWith("ag ") || tool.input_command.startsWith("find ") ||
+       tool.input_command.startsWith("git grep ") || tool.input_command.startsWith("git log ") ||
+       tool.input_command.startsWith("git show ") || tool.input_command.startsWith("git diff") ||
+       tool.input_command.startsWith("echo ") || tool.input_command.startsWith("printf ") ||
+       tool.input_command.startsWith("cat ")) &&
+      !tool.input_command.contains("&&") && !tool.input_command.contains("||") &&
+      !tool.input_command.contains(";") && !tool.input_command.contains("$(") &&
+      !tool.input_command.contains("`")
+
+  # Identifies paths inside temporary folders.
+  - name: is_tmp_path
+    expression: >
+      tool.real_file_path.startsWith("/tmp/") ||
+      tool.real_file_path.startsWith("/var/tmp/") ||
+      tool.real_file_path.startsWith("/dev/shm/")
+
+  # Checks if the read tool is accessing cloud/system credential files.
+  - name: is_read_credential_path
+    expression: >
+      tool.name == "Read" && tool.real_file_path != "" &&
+      (tool.real_file_path.contains("/.aws/credentials") || tool.real_file_path.contains("/.aws/config") ||
+       tool.real_file_path.contains("/.ssh/id_rsa") || tool.real_file_path.contains("/.ssh/id_ed25519") ||
+       tool.real_file_path.contains("/.ssh/id_ecdsa") || tool.real_file_path.contains("/.gnupg/") ||
+       tool.real_file_path.contains("/.netrc") || tool.real_file_path.contains("/.docker/config.json"))
+
+  # Helper to identify reverse shells using mkfifo and netcat.
+  - name: is_reverse_shell_mkfifo_nc
+    expression: tool.input_command.contains("mkfifo") && tool.input_command.contains(" nc ")
+
+  # Detects typical reverse shell invocation strings.
+  - name: is_reverse_shell
+    expression: >
+      tool.input_command.contains("/dev/tcp/") || tool.input_command.contains(">&/dev/tcp") ||
+      tool.input_command.contains(">& /dev/tcp") || tool.input_command.contains("bash -i") ||
+      tool.input_command.contains("nc -e") || tool.input_command.contains("nc -c") ||
+      tool.input_command.contains("ncat --exec") || tool.input_command.contains("ncat -e") ||
+      tool.input_command.contains("socat exec:") || is_reverse_shell_mkfifo_nc ||
+      tool.input_command.contains("exec 5<>")
+
+  # Detects access attempts to cloud instance metadata API services.
+  - name: is_imds_access
+    expression: >
+      (tool.input_command.contains("curl ") || tool.input_command.contains("wget ")) &&
+      (tool.input_command.contains("169.254.169.254") || tool.input_command.contains("metadata.google.internal") ||
+       tool.input_command.contains("metadata.azure.com") || tool.input_command.contains("fd00:ec2::254") ||
+       tool.input_command.contains("2852039166") || tool.input_command.contains("0xa9fea9fe") ||
+       tool.input_command.contains("0Xa9fea9fe") || tool.input_command.contains("0251.0376.0251.0376"))
+
+  # Checks if commands try to compress/archive credential directories.
+  - name: is_credential_archive
+    expression: >
+      (tool.input_command.contains("tar ") || tool.input_command.contains("zip ") ||
+       tool.input_command.contains("gzip ") || tool.input_command.contains("7z ") ||
+       tool.input_command.contains("rar ")) &&
+      (tool.input_command.contains("/.aws") || tool.input_command.contains("/.ssh") ||
+       tool.input_command.contains("/.gnupg") || tool.input_command.contains("/.kube") ||
+       tool.input_command.contains("/.docker"))
+
+  # Checks if commands attempt to build SSH tunnels or SOCKS proxies.
+  - name: is_ssh_tunnel
+    expression: tool.input_command.contains("ssh ") && (tool.input_command.contains(" -R ") || tool.input_command.contains(" -D ") || tool.input_command.contains(" -w "))
+
+  # Identifies command scheduling changes (crontabs).
+  - name: is_cron_persistence
+    expression: tool.input_command.contains("crontab -") || tool.input_command.contains("| crontab") || tool.input_command.contains("/etc/cron")
+
+  # History wiping indicators.
+  - name: is_history_wipe_rm_bash
+    expression: tool.input_command.contains("rm ") && tool.input_command.contains(".bash_history")
+  - name: is_history_wipe_rm_zsh
+    expression: tool.input_command.contains("rm ") && tool.input_command.contains(".zsh_history")
+  - name: is_history_wipe_truncate
+    expression: tool.input_command.contains("truncate ") && tool.input_command.contains("_history")
+  - name: is_history_wipe
+    expression: >
+      tool.input_command.contains("history -c") || tool.input_command.contains("history -w") ||
+      tool.input_command.contains("unset HISTFILE") || tool.input_command.contains("HISTSIZE==0") ||
+      tool.input_command.contains("HISTFILESIZE==0") || is_history_wipe_rm_bash ||
+      is_history_wipe_rm_zsh || is_history_wipe_truncate
+
+  # Package registry publishing indicators.
+  - name: is_package_publish
+    expression: >
+      tool.input_command.contains("npm publish") || tool.input_command.contains("twine upload") ||
+      tool.input_command.contains("cargo publish") || tool.input_command.contains("gem push") ||
+      tool.input_command.contains("pip upload")
+
+  # Detects cross-agent auth file reads.
+  - name: is_gemini_auth_cross
+    expression: tool.real_file_path.contains("/.gemini/oauth_creds") && agent.name != "gemini"
+  - name: is_codex_auth_cross
+    expression: tool.real_file_path.contains("/.codex/auth") && agent.name != "codex"
+  - name: is_cursor_auth_cross
+    expression: tool.real_file_path.contains("/.cursor/session") && agent.name != "cursor"
+  - name: is_claude_auth_cross
+    expression: tool.real_file_path.contains("/.claude/oauth") && agent.name != "claude_code"
+  - name: is_cross_agent_auth_read
+    expression: tool.name == "Read" && (is_gemini_auth_cross || is_codex_auth_cross || is_cursor_auth_cross || is_claude_auth_cross)
+
+  # Detects installs referencing known IOC host domains.
+  - name: is_mcp_install_from_untrusted
+    expression: >
+      (tool.input_command.contains("npx ") || tool.input_command.contains("npm install") ||
+       tool.input_command.contains("uvx ") || tool.input_command.contains("pip install") ||
+       tool.input_command.contains("claude skills install") || tool.input_command.contains("claude plugin install")) &&
+      cmd_contains_ioc_domain
+
+  # Detects MCP invocation from temporary folders.
+  - name: is_mcp_temp_path
+    expression: >
+      (tool.input_command.contains("/tmp/") || tool.input_command.contains("/dev/shm/") || tool.input_command.contains("/var/tmp/")) &&
+      (tool.input_command.contains("--stdio") || tool.input_command.contains("--sse"))
+
+  # Checks if Glob searches target credentials.
+  - name: is_credential_glob
+    expression: >
+      tool.name == "Glob" &&
+      (tool.input.contains("/.aws/") || tool.input.contains("/.ssh/") ||
+       tool.input.contains("/.gnupg/") || tool.input.contains("/.kube/") ||
+       tool.input.contains("/id_rsa") || tool.input.contains("/id_ed25519") ||
+       tool.input.contains("oauth_creds"))
+
+  # Docker privilege escalation options.
+  - name: is_container_privileged_flag
+    expression: tool.input_command.contains("--privileged")
+  - name: is_container_cap_add
+    expression: tool.input_command.contains("--cap-add")
+  - name: is_container_security_opt_unconfined
+    expression: >
+      tool.input_command.contains("seccomp==unconfined") || tool.input_command.contains("apparmor==unconfined") ||
+      tool.input_command.contains("systempaths==unconfined") || tool.input_command.contains("label==disable") ||
+      tool.input_command.contains("label:disable")
+  - name: is_container_host_namespace
+    expression: >
+      tool.input_command.contains("--pid==host") || tool.input_command.contains("--pid host") ||
+      tool.input_command.contains("--ipc==host") || tool.input_command.contains("--ipc host") ||
+      tool.input_command.contains("--userns==host") || tool.input_command.contains("--userns host") ||
+      tool.input_command.contains("--uts==host") || tool.input_command.contains("--uts host") ||
+      tool.input_command.contains("--cgroupns==host") || tool.input_command.contains("--cgroupns host") ||
+      tool.input_command.contains("--network==host") || tool.input_command.contains("--network host") ||
+      tool.input_command.contains("--net==host") || tool.input_command.contains("--net host")
+  - name: is_container_docker_socket
+    expression: tool.input_command.contains("docker.sock") || tool.input_command.contains("DOCKER_HOST==")
+  - name: is_container_host_root_mount
+    expression: >
+      tool.input_command.contains("-v /:") || tool.input_command.contains("--volume /:") ||
+      tool.input_command.contains("source==/,") || tool.input_command.contains("src==/,")
+  - name: is_container_device_passthrough
+    expression: tool.input_command.contains("--device==/dev/") || tool.input_command.contains("--device /dev/")
+  - name: is_nsenter_host
+    expression: tool.input_command.contains("nsenter") && (tool.input_command.contains("-t 1") || tool.input_command.contains("--target 1") || tool.input_command.contains("-t1"))
+
+  # Aggregated container breakout macro.
+  - name: is_container_privilege_escalation
+    expression: >
+      is_container_privileged_flag || is_container_cap_add || is_container_security_opt_unconfined ||
+      is_container_host_namespace || is_container_docker_socket || is_container_host_root_mount ||
+      is_container_device_passthrough || is_nsenter_host
+
+  # Checks if write targets MCP configuration files.
+  - name: is_mcp_config_write
+    expression: is_write_tool && tool.file_path != "" && (tool.file_name == ".mcp.json" || tool.file_name == "managed-mcp.json")
+
+  # Detects MCP command points to temp paths or encoded parameters.
+  - name: is_mcp_command_temp
+    expression: >
+      tool.input.contains("/tmp/") || tool.input.contains("/dev/shm/") ||
+      tool.input.contains("/var/tmp/") || tool.input.contains("$TMPDIR") ||
+      tool.input.contains("$TMP") || tool.input.contains("$TEMP") ||
+      tool.input.contains("/run/user/")
+  - name: is_mcp_command_encoded
+    expression: tool.input.contains("base64")
+
+  # Checks if agent is calling self-registration commands.
+  - name: is_mcp_self_register
+    expression: >
+      tool.input_command.contains("claude mcp add") || tool.input_command.contains("claude mcp install") ||
+      tool.input_command.contains("claude mcp add-json") || tool.input_command.contains("claude mcp add-from-claude-desktop") ||
+      tool.input_command.contains("claude plugin install") || tool.input_command.contains("claude skill add")
+
+  # Checks for skills/commands write paths.
+  - name: is_skill_commands_path
+    expression: tool.real_file_path.contains("/.claude/commands/")
+  - name: is_skill_content_ioc
+    expression: is_skill_commands_path && contains_ioc_domain
+  - name: is_skill_pipe_bash
+    expression: >
+      is_skill_commands_path &&
+      (tool.input.contains("| bash") || tool.input.contains("|bash") ||
+       tool.input.contains("| sh") || tool.input.contains("|sh") ||
+       tool.input.contains("bash <(") || tool.input.contains("sh <(") ||
+       tool.input.contains("| /bin/bash") || tool.input.contains("|/bin/bash") ||
+       tool.input.contains("| /bin/sh") || tool.input.contains("|/bin/sh") ||
+       tool.input.contains("| /usr/bin/bash") || tool.input.contains("|/usr/bin/bash") ||
+       tool.input.contains("| /usr/bin/sh") || tool.input.contains("|/usr/bin/sh"))
+
+  # Checks if package install options bypass user confirmation dialogs.
+  - name: is_npx_auto_accept_mcp_skill
+    expression: >
+      (tool.input_command.contains("npx -y ") || tool.input_command.contains("npx --yes ") ||
+       tool.input_command.contains("bunx -y ") || tool.input_command.contains("bunx --yes ") ||
+       tool.input_command.contains("yarn dlx ") || tool.input_command.contains("pnpm dlx ")) &&
+      (tool.input_command.contains("mcp") || tool.input_command.contains("skill") ||
+       tool.input_command.contains("plugin") || tool.input_command.contains("modelcontextprotocol") ||
+       tool.input_command.contains("@anthropic") || tool.input_command.contains("@openai") ||
+       tool.input_command.contains("@google"))
+
+  # Bash command writing to skill/command dirs.
+  - name: is_bash_commands_write
+    expression: tool.name == "Bash" && tool.input_command.contains("/.claude/commands/")
+
+  # Settings write.
+  - name: is_claude_settings_write
+    expression: >
+      is_write_tool && tool.real_file_path != "" &&
+      (tool.real_file_path.endsWith("/.claude/settings.json") || tool.real_file_path.endsWith("/.claude/settings.local.json"))
+
+  # Content controls for settings hooks.
+  - name: is_settings_hooks_content
+    expression: tool.input.contains("hooks")
+  - name: is_settings_mcp_content
+    expression: tool.input.contains("mcpServers")
+
+  # Git hooks writes.
+  - name: is_git_hooks_write
+    expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.git/hooks/")
+  - name: is_bash_git_hooks_write
+    expression: tool.name == "Bash" && tool.input_command.contains("/.git/hooks/")
+
+  # Registry redirects macros.
+  - name: is_registry_config_write
+    expression: is_write_tool && tool.file_path != "" && tool.file_name in registry_config_files
+  - name: is_registry_redirect_content
+    expression: >
+      tool.input.contains("registry==") || tool.input.contains("npmRegistryServer") ||
+      tool.input.contains("index-url") || tool.input.contains("extra-index-url") ||
+      tool.input.contains("index-server")
+  - name: is_bash_npm_registry_redirect
+    expression: tool.input_command.contains("npm config set registry") || tool.input_command.contains("npm set registry")
+  - name: is_bash_pip_registry_redirect
+    expression: (tool.input_command.contains("pip config set") || tool.input_command.contains("pip3 config set")) && (tool.input_command.contains("index-url") || tool.input_command.contains("extra-index-url"))
+  - name: is_bash_registry_redirect
+    expression: is_bash_npm_registry_redirect || is_bash_pip_registry_redirect
+
+  # Checks environmental API base URL overrides.
+  - name: is_env_file_write
+    expression: is_write_tool && tool.file_path != "" && tool.file_name in env_file_names
+  - name: is_api_base_url_override
+    expression: tool.input.contains("ANTHROPIC_BASE_URL") || tool.input.contains("OPENAI_BASE_URL") || tool.input.contains("OPENAI_API_BASE")
+  - name: is_api_key_in_env
+    expression: tool.input.contains("ANTHROPIC_API_KEY") || tool.input.contains("OPENAI_API_KEY") || tool.input.contains("GEMINI_API_KEY")
+
+# =========================================================================
+# SECTION 3: RULES
+# Guardrail policies evaluated against agent tool invocations.
+# =========================================================================
+
 rules:
-- name: Monitor activity outside working directory
-  description: "Logs when a coding agent reads, writes, or edits files outside the\
-    \ session's working directory. Informational only \u2014 does not block."
-  expression: tool.name in ["Write", "Edit", "Read"] && tool.real_file_path != ""
-    && is_outside_cwd
-  action: allow
-  message: Falco detected access to %tool.real_file_path% which is outside the working
-    directory %agent.real_cwd%
-- name: Ask before writing outside working directory
-  description: "Requires user confirmation when a coding agent writes or edits a file\
-    \ outside the session's working directory. Claude Code's own data tree (~/.claude/)\
-    \ is excluded as routine session bookkeeping \u2014 plans, todos, memories, transcripts,\
-    \ caches. Sensitive subpaths under ~/.claude/ (settings.json, policy-limits.json,\
-    \ agents/, skills/, plugins/, backups/, commands/, CLAUDE.md) are still guarded\
-    \ by dedicated deny/ask rules."
-  expression: is_write_tool && tool.real_file_path != "" && is_outside_cwd && ! is_sensitive_path
-    && ! is_claude_data_path
-  action: ask
-  message: Falco requires confirmation to write to %tool.real_file_path% because it
-    is outside the working directory %agent.real_cwd%
-- name: Deny reading sensitive paths
-  description: Blocks reads from sensitive filesystem locations such as ~/.ssh/, cloud
-    credential directories, and environment variable files. Prevents exfiltration
-    of secrets via the Read tool. Extend the sensitive_paths and sensitive_file_names
-    lists in user/ rules to customize.
-  expression: tool.name == "Read" && is_sensitive_path
-  action: deny
-  message: Falco blocked reading %tool.real_file_path% because it is a sensitive path
-- name: Deny writing to sensitive paths
-  description: Blocks writes to sensitive filesystem locations such as /etc/, ~/.ssh/,
-    cloud credential directories, and environment variable files. Extend the sensitive_paths
-    and sensitive_file_names lists in user/ rules to customize.
-  expression: is_write_tool && is_sensitive_path
-  action: deny
-  message: Falco blocked writing to %tool.real_file_path% because it is a sensitive
-    path
-- name: Ask before agent writing sandbox-disable configuration
-  description: "Requires user confirmation when a coding agent writes or edits its\
-    \ own sandbox configuration file with content that may disable OS-level process\
-    \ isolation. Covers Edit value-only diffs, numeric/null falsy values, allowUnsandboxedCommands:1,\
-    \ Gemini string disable variants, and settings.local.json. Fires at PreToolUse,\
-    \ before the write executes. Asks rather than denies because the content macros\
-    \ (e.g., \"enabled\" + \"false\") match common JSON shapes that legitimately appear\
-    \ in unrelated settings.json edits \u2014 particularly when the Edit tool surfaces\
-    \ an existing disable-shape value in old_string/new_string."
-  expression: is_write_tool && tool.real_file_path != "" && is_agent_sandbox_config
-    && is_sandbox_disable_content
-  action: ask
-  message: Falco requires confirmation before %agent.name% modifies its sandbox configuration
-    at %tool.real_file_path%
-- name: Ask before Claude Code per-command sandbox escape
-  description: "Requires user confirmation when Claude Code invokes the Bash tool\
-    \ with dangerouslyDisableSandbox set to true. Hardened to check both the key name\
-    \ and the \"true\" value \u2014 dangerouslyDisableSandbox:false no longer triggers\
-    \ a false positive ask. This rule is the ONLY detection layer for this event."
-  expression: tool.name == "Bash" && tool.input .contains("dangerouslyDisableSandbox")
-    && tool.input .contains("true")
-  action: ask
-  message: Falco requires confirmation before Claude Code runs an unsandboxed Bash
-    command (%tool.input_command%)
-- name: Deny Bash command writing sandbox-disable content to agent settings file
-  description: Blocks Bash commands that reference an agent settings file path combined
-    with sandbox-disabling content. Covers echo/tee/python3/node redirection. Hardened
-    against Python capital-F False, null values, numeric 0 for enabled field, and
-    numeric 1 for allowUnsandboxedCommands.
-  expression: tool.name == "Bash" && is_bash_sandbox_settings_path && is_bash_sandbox_disable_cmd
-  action: deny
-  message: 'Falco blocked %agent.name% from disabling its sandbox via Bash command:
-    %tool.input_command%'
-- name: Deny Codex CLI sandbox bypass flag
-  description: Blocks Bash invocations of the Codex CLI with flags that bypass sandbox
-    isolation. Covers both dash and underscore variants of dangerously-bypass-approvals-and-sandbox,
-    and --sandbox danger-full-access.
-  expression: tool.name == "Bash" && is_codex_sandbox_bypass
-  action: deny
-  message: Falco blocked %agent.name% from starting Codex with a sandbox bypass flag
-    (%tool.input_command%)
-- name: Deny Gemini CLI sandbox disable via environment variable
-  description: Blocks Bash commands that set GEMINI_SANDBOX to a disabling value (none,
-    false, disabled, 0). Covers inline assignment, exported assignment, and numeric
-    zero.
-  expression: tool.name == "Bash" && is_gemini_sandbox_env_bypass
-  action: deny
-  message: Falco blocked %agent.name% from disabling Gemini sandbox via environment
-    variable (%tool.input_command%)
-- name: Deny Bash command replacing agent sandbox settings file
-  description: "Blocks Bash commands that replace an agent sandbox settings file via\
-    \ cp, mv, or sed -i. These operations bypass Rule C because the sandbox-disabling\
-    \ payload is in the source file \u2014 no disable keywords appear in the cp/mv/sed\
-    \ command. A cp from /tmp signals a staged payload (also caught by the tmp-staging\
-    \ rule in Section 4); sed -i indicates a content-oblivious rewrite."
-  expression: tool.name == "Bash" && is_bash_sandbox_settings_replace
-  action: deny
-  message: Falco blocked %agent.name% from replacing an agent sandbox settings file
-    (%tool.input_command%)
-- name: Deny credential file access via Bash
-  description: Blocks Bash commands that reference credential files or secret environment
-    variable names. Prevents exfiltration of secrets through shell redirection that
-    the Read tool rules cannot intercept (e.g., cat ~/.aws/credentials, inline AWS_SECRET_ACCESS_KEY=
-    substitutions).
-  expression: is_bash && references_credential
-  action: deny
-  message: Falco blocked a Bash command referencing a credential path or secret token
-    (%tool.input_command%)
-- name: Deny credential file access via Read tool
-  description: "Blocks Read tool calls targeting well-known credential file paths:\
-    \ ~/.aws/credentials, ~/.aws/config, ~/.ssh/id_* private keys, ~/.gnupg/, ~/.netrc,\
-    \ and ~/.docker/config.json. The Bash credential rule only inspects tool.input_command\
-    \ and misses direct Read calls entirely \u2014 an agent can Read ~/.aws/credentials\
-    \ without executing a shell command. Credential file reads have no legitimate\
-    \ use in a coding workflow; any access warrants an immediate block."
-  expression: is_read_credential_path
-  action: deny
-  message: Falco blocked the Read tool accessing a credential file at %tool.real_file_path%
-- name: Deny destructive system commands
-  description: 'Blocks shell commands whose substrings unambiguously indicate a destructive
-    or privilege-elevating operation: dd overwriting a disk (dd if=, dd of=), filesystem
-    creation (mkfs), direct device redirects (> /dev/sda), system halt (init 0), and
-    unconstrained privilege escalation (sudo su, sudo -i). None of these appear in
-    normal coding-agent workflows.'
-  expression: is_bash && is_destructive_command
-  action: deny
-  message: Falco blocked a destructive system command (%tool.input_command%)
-- name: Ask before potentially destructive shell commands
-  description: 'Requires user confirmation before commands whose dangerous form overlaps
-    with legitimate development workflows or whose substrings collide with benign
-    content: rm -rf / rm -fr / rm --recursive (common in build cleanup and Makefiles),
-    sudo rm (admin tasks), and shutdown / reboot / halt (which also appear in prose
-    and unrelated tool names like "graceful shutdown" comments). Asks rather than
-    denies because the substring match cannot distinguish a build cleanup from a destructive
-    operation.'
-  expression: is_bash && is_likely_destructive_command && ! is_pure_search_or_print_command
-  action: ask
-  message: Falco requires confirmation before a potentially destructive shell command
-    (%tool.input_command%)
-- name: Ask before container privilege escalation or host breakout
-  description: 'Requires user confirmation before Bash commands that grant a container
-    host-equivalent power or break out of container isolation: --privileged, --cap-add,
-    disabled seccomp/AppArmor/SELinux profiles (--security-opt *=unconfined or label=disable),
-    shared host namespaces (--pid / --ipc / --userns / --uts / --cgroupns / --network
-    = host), Docker daemon socket exposure (docker.sock, DOCKER_HOST=), host root
-    bind mounts (-v /: or --mount source=/), raw device passthrough (--device=/dev/),
-    and nsenter into host PID 1. The flags are shared by docker, podman, and nerdctl.
-    Prempti runs in user space and only sees what the agent declares at the hook layer,
-    so a privileged container is a route to host access it cannot observe afterward.
-    Asks rather than denies because dind, devcontainers, and GPU/CI workloads use
-    these flags legitimately; --network=host is the most common of these in benign
-    dev and is the first to relax via override.'
-  expression: is_bash && is_container_privilege_escalation
-  action: ask
-  message: Falco requires confirmation before %agent.name% runs a container command
-    that escalates privileges or breaks out of container isolation (%tool.input_command%)
-- name: Deny pipe to shell interpreter
-  description: Blocks Bash commands that pipe network-fetched or generated content
-    directly into a shell interpreter. Covers curl|bash, wget|sh, bash <(...), and
-    similar patterns used for remote code execution and supply chain attacks.
-  expression: is_bash && is_pipe_to_shell
-  action: deny
-  message: Falco blocked piping content to a shell interpreter (%tool.input_command%)
-- name: Deny encoded payload execution
-  description: Blocks execution of base64-decoded or hex-decoded payloads and inline
-    interpreter one-liners (python -c, perl -e, ruby -e). Encoding and inline interpreters
-    are common obfuscation techniques to evade string-match detection.
-  expression: is_bash && is_encoded_exec
-  action: deny
-  message: Falco blocked execution of a potentially encoded or inline-interpreted
-    payload (%tool.input_command%)
-- name: Deny curl wget exfiltration
-  description: Blocks outbound data transfers via curl or wget that POST, upload,
-    or pipe data to an external host. Prevents the write-to-tmp-then-exfiltrate pattern.
-    Plain GET downloads (curl https://...) are not affected.
-  expression: is_bash && is_curl_exfil
-  action: deny
-  message: Falco blocked a potential data exfiltration command via curl or wget (%tool.input_command%)
-- name: Ask before writing to tmp staging paths
-  description: "Requires user confirmation for Write and Edit operations targeting\
-    \ /tmp, /var/tmp, and /dev/shm. These paths are commonly used as staging areas\
-    \ for data exfiltration (write sensitive data, then curl it out), but they are\
-    \ also legitimate scratch areas for many coding workflows (build artifacts, test\
-    \ fixtures, agent-built scripts). Asks rather than denies because the path alone\
-    \ is not a sufficient signal of malicious intent \u2014 the exfiltration follow-up\
-    \ is caught by the curl/wget rule."
-  expression: is_write_tool && tool.real_file_path != "" && is_tmp_path
-  action: ask
-  message: Falco requires confirmation before writing to the staging path %tool.real_file_path%
-- name: Deny reverse shell via Bash
-  description: 'Blocks Bash commands that establish reverse shell connections: /dev/tcp
-    redirection, nc/ncat with exec, socat exec, and mkfifo pipe shells. These patterns
-    have no legitimate use in a coding workflow.'
-  expression: is_bash && is_reverse_shell
-  action: deny
-  message: Falco blocked a reverse shell command (%tool.input_command%)
-- name: Deny cloud metadata service access via Bash
-  description: Blocks curl and wget requests to cloud instance metadata services (AWS
-    IMDS 169.254.169.254, GCP metadata.google.internal, Azure metadata.azure.com).
-    These endpoints expose IAM credentials. Plain GET requests are not covered by
-    the existing curl/wget exfiltration rule (which requires POST/upload flags).
-  expression: is_bash && is_imds_access
-  action: deny
-  message: Falco blocked access to a cloud metadata service (%tool.input_command%)
-- name: Deny credential directory archive via Bash
-  description: Blocks shell commands that compress credential directories (/.aws,
-    /.ssh, /.gnupg, /.kube, /.docker) with tar, zip, gzip, 7z, or rar. Archiving credential
-    directories is the first step in a compress-then-exfiltrate pattern.
-  expression: is_bash && is_credential_archive
-  action: deny
-  message: Falco blocked archiving a credential directory (%tool.input_command%)
-- name: Deny SSH reverse tunnel and SOCKS proxy
-  description: Blocks SSH commands using reverse port forwarding (-R), SOCKS proxy
-    (-D), or VPN tunnel (-w) flags. These create covert outbound channels. Legitimate
-    direct SSH and local port forwarding (-L, common for database tunneling) are intentionally
-    excluded.
-  expression: is_bash && is_ssh_tunnel
-  action: deny
-  message: Falco blocked an SSH tunneling or proxy command (%tool.input_command%)
-- name: Ask before cron and scheduled task manipulation
-  description: "Requires confirmation before crontab modifications or writes targeting\
-    \ /etc/cron directories. Scheduled tasks are a persistence mechanism \u2014 unexpected\
-    \ from a coding session but not always malicious (e.g., app setup scripts), so\
-    \ ask rather than deny."
-  expression: is_bash && is_cron_persistence
-  action: ask
-  message: Falco requires confirmation before modifying cron configuration (%tool.input_command%)
-- name: Deny audit trail destruction
-  description: 'Blocks commands that wipe shell history: history -c/history -w, unset
-    HISTFILE, HISTSIZE=0, and removal or truncation of .bash_history/.zsh_history.
-    History wiping is a post-compromise covering technique with no legitimate use
-    in a coding session.'
-  expression: is_bash && is_history_wipe
-  action: deny
-  message: Falco blocked a shell history wipe attempt (%tool.input_command%)
-- name: Deny package publish
-  description: 'Blocks publishing commands across major ecosystems: npm publish, twine
-    upload, cargo publish, gem push, pip upload. Publishing packages is irreversible
-    and a direct supply chain attack vector. Should always require explicit manual
-    confirmation, not agent automation.'
-  expression: is_bash && is_package_publish
-  action: deny
-  message: Falco blocked a package publish command (%tool.input_command%)
-- name: Ask before modifying shell startup files
-  description: Requires confirmation when writing or editing shell startup files (.bashrc,
-    .zshrc, .profile, etc.). These files execute on every shell login and are a persistence
-    mechanism. Writing to them may be legitimate in dotfiles projects but always warrants
-    explicit user confirmation.
-  expression: is_write_tool && tool.file_path != "" && tool.file_name in shell_startup_files
-  action: ask
-  message: Falco requires confirmation before modifying shell startup file %tool.real_file_path%
-- name: Ask before writing agent instruction files outside working directory
-  description: Requires confirmation when writing or editing agent instruction files
-    (.cursorrules, .windsurfrules, .aiderrules, AGENTS.md) outside the current working
-    directory. Writing agent instructions to another project is a prompt injection
-    vector. Writes inside the current project are allowed.
-  expression: is_write_tool && tool.file_path != "" && tool.file_name in agent_instruction_files
-    && tool.real_file_path != "" && is_outside_cwd
-  action: ask
-  message: Falco requires confirmation before writing agent instruction file %tool.real_file_path%
-    outside working directory %agent.real_cwd%
-- name: Deny cross-agent authentication file access
-  description: Blocks reads of another agent's OAuth or session credential files.
-    Each agent should only access its own credential store. A Claude Code session
-    reading ~/.gemini/oauth_creds.json (or vice versa) signals prompt injection, credential
-    harvesting, or a compromised session pivoting between agents.
-  expression: is_cross_agent_auth_read
-  action: deny
-  message: Falco blocked %agent.name% from reading another agent's authentication
-    file %tool.real_file_path%
-- name: Deny MCP server or skill install from untrusted host
-  description: Blocks npm, npx, uvx, pip install, and claude skills/plugin install
-    commands that reference known malicious code hosting sites in the ioc_hosting_domains
-    list. These are the primary supply chain IOCs from the ClawHavoc campaign. Legitimate
-    installs from npmjs.com, pypi.org, and official GitHub are unaffected.
-  expression: is_bash && is_mcp_install_from_untrusted
-  action: deny
-  message: Falco blocked installing a package or skill from an untrusted host (%tool.input_command%)
-- name: Deny MCP server execution from temporary directory
-  description: Blocks execution of processes using MCP transport flags (--stdio, --sse)
-    from /tmp, /dev/shm, or /var/tmp. Legitimate MCP servers are installed to system
-    or user package directories, not temporary storage. Running from /tmp indicates
-    a staged payload dropped and immediately executed.
-  expression: is_bash && is_mcp_temp_path
-  action: deny
-  message: Falco blocked executing a potential MCP server from a temporary directory
-    (%tool.input_command%)
-- name: Ask before Glob with credential directory patterns
-  description: Requires confirmation when the Glob tool is used with patterns that
-    target credential directories or key files (/.aws/, /.ssh/, /.gnupg/, /.kube/,
-    id_rsa, id_ed25519, oauth_creds). Such patterns suggest credential reconnaissance
-    before an exfiltration attempt. In-project .env globbing is not affected.
-  expression: is_credential_glob
-  action: ask
-  message: Falco requires confirmation before globbing with a credential-targeting
-    pattern (%tool.input%)
-- name: Deny MCP config with command from temporary directory
-  description: "Blocks writing an MCP server configuration file (.mcp.json, managed-mcp.json)\
-    \ where the server \"command\" field points to a temporary directory (/tmp, /dev/shm,\
-    \ /var/tmp). Legitimate MCP servers are installed to system or user package directories\
-    \ \u2014 never to temporary storage. A \"command\" in /tmp indicates a staged\
-    \ payload being registered as a persistent MCP server: the agent drops the binary\
-    \ first (caught by the tmp-staging rule), then creates the config to wire it in.\
-    \ This rule closes the Write/Edit vector that the existing Bash-level MCP temp-path\
-    \ rule (Section 4) does not cover."
-  expression: is_mcp_config_write && is_mcp_command_temp
-  action: deny
-  message: Falco blocked writing an MCP server config with a command path in temporary
-    storage at %tool.real_file_path%
-- name: Deny MCP config with IOC domain in server URL
-  description: Blocks writing an MCP server configuration file that includes a known
-    malicious code-hosting domain (ioc_hosting_domains list) in the server "url" field.
-    SSE-transport MCP servers specify their endpoint as a URL; the existing untrusted-host
-    rule in Section 4 only inspects Bash install commands, not Write/Edit tool content.
-    Domains are the confirmed IOCs from the ClawHavoc campaign targeting Claude Code,
-    Gemini CLI, and Codex agents with 341 malicious skills distributed via paste and
-    file-hosting sites.
-  expression: is_mcp_config_write && contains_ioc_domain
-  action: deny
-  message: Falco blocked writing an MCP server config with a malicious hosting domain
-    in the server URL at %tool.real_file_path%
-- name: Ask before MCP config with encoded server command
-  description: 'Requires user confirmation when writing an MCP server configuration
-    file that contains the substring "base64", indicating a possibly obfuscated server
-    command decoded and executed at runtime. Typical malicious pattern: "command":
-    "bash", "args": ["-c", "base64 -d <<< PAYLOAD | sh"]. Asks rather than denies
-    because the literal substring "base64" also appears in benign contexts: server
-    names referencing base64 encoding, descriptions mentioning the algorithm, or data
-    URLs (data:...;base64,...) used for icons and small assets in legitimate MCP configs.'
-  expression: is_mcp_config_write && is_mcp_command_encoded
-  action: ask
-  message: Falco requires confirmation before writing an MCP server config that references
-    base64 at %tool.real_file_path%
-- name: Ask before agent self-registering MCP server
-  description: "Requires user confirmation when the agent invokes claude mcp add,\
-    \ claude mcp add-json, claude mcp install, claude mcp add-from-claude-desktop,\
-    \ claude plugin install, or claude skill add through the Bash tool. An agent autonomously\
-    \ expanding its own tool surface by adding MCP servers or plugins is an excessive\
-    \ agency indicator and a supply chain pivot vector \u2014 the agent gains access\
-    \ to new external services without explicit human approval."
-  expression: tool.name == "Bash" && is_mcp_self_register
-  action: ask
-  message: Falco requires confirmation before the agent self-registers an MCP server
-    or plugin (%tool.input_command%)
-- name: Ask before writing to Claude slash command directory
-  description: 'Requires user confirmation when the agent writes or edits files under
-    .claude/commands/. This directory contains custom slash commands that execute
-    arbitrary Bash on invocation (the file content is the shell command that runs
-    when a user types /commandname). Writing here is a persistent backdoor vector:
-    an injected prompt or malicious skill can create a new /slash command that runs
-    attacker-controlled code in every subsequent Claude Code session. Unlike tool
-    calls, slash command files persist indefinitely and are not visible to the user
-    without explicitly inspecting the commands directory.'
-  expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path .contains("/.claude/commands/")
-  action: ask
-  message: Falco requires confirmation before writing a Claude slash command at %tool.real_file_path%
-- name: Ask before writing CLAUDE.md outside working directory
-  description: "Requires user confirmation when the agent writes or edits a CLAUDE.md\
-    \ file outside the current working directory. CLAUDE.md files in any ancestor\
-    \ directory inject instructions into Claude Code for all projects under that path\
-    \ \u2014 writing one to ~/, ~/projects/, or / is a prompt injection attack that\
-    \ persists across sessions and affects all future Claude Code invocations in that\
-    \ directory tree. The agent instruction files rule in Section 4 covers .cursorrules,\
-    \ .windsurfrules, AGENTS.md; this rule adds CLAUDE.md, Claude Code's own instruction\
-    \ file. Writes to CLAUDE.md inside the working project directory are allowed."
-  expression: is_write_tool && tool.file_path != "" && tool.file_name == "CLAUDE.md"
-    && tool.real_file_path != "" && is_outside_cwd
-  action: ask
-  message: Falco requires confirmation before writing CLAUDE.md at %tool.real_file_path%
-    outside working directory %agent.real_cwd%
-- name: Deny skill command file with IOC domain in content
-  description: "Blocks writing a skill or slash command file (under .claude/commands/)\
-    \ whose content references a known malicious code-hosting domain. Claude reads\
-    \ skill files as prompt context and follows their instructions \u2014 a skill\
-    \ that directs Claude to \"fetch from pastebin.com and execute\" will do exactly\
-    \ that on the next invocation. This converts the catch-all ask rule (Rule 5) to\
-    \ a hard deny for file content that conclusively indicates a supply chain attack."
-  expression: is_write_tool && tool.real_file_path != "" && is_skill_content_ioc
-  action: deny
-  message: Falco blocked writing a skill file with a malicious hosting domain in its
-    content at %tool.real_file_path%
-- name: Deny skill command file with pipe-to-shell in content
-  description: "Blocks writing a skill or slash command file (under .claude/commands/)\
-    \ whose content contains a pipe-to-shell pattern (| bash, | sh, bash <(...), sh\
-    \ <(...)). Skills with embedded pipe-to-shell instructions are the skill-layer\
-    \ equivalent of the pipe-to-shell Bash rule in Section 4: the agent will invoke\
-    \ the pattern as a tool call when the skill is triggered. Legitimate skills describe\
-    \ workflows and reference tools \u2014 they do not embed direct shell pipeline\
-    \ execution."
-  expression: is_write_tool && tool.real_file_path != "" && is_skill_pipe_bash
-  action: deny
-  message: Falco blocked writing a skill file with a pipe-to-shell pattern in its
-    content at %tool.real_file_path%
-- name: Ask before npx auto-accept MCP or skill installation
-  description: Requires user confirmation when npx, bunx, yarn dlx, or pnpm dlx is
-    invoked with the -y / --yes flag (or is always non-interactive, as with yarn dlx)
-    combined with an MCP server, skill, or plugin package name. The auto-accept flag
-    silently bypasses the "install this package?" confirmation prompt, removing the
-    human review step before the package executes. The untrusted-host rule in Section
-    4 only blocks IOC domains; this rule fires regardless of source since silent installation
-    of any agent-extending package warrants explicit approval.
-  expression: tool.name == "Bash" && is_npx_auto_accept_mcp_skill
-  action: ask
-  message: Falco requires confirmation before auto-accepting package installation
-    for an MCP server or skill (%tool.input_command%)
-- name: Ask before Bash command writing to Claude slash command directory
-  description: "Requires user confirmation when a Bash command references the .claude/commands/\
-    \ directory. Shell redirections (echo >, tee, cat >) can write new slash command\
-    \ files without using the Write or Edit tools, bypassing Rule 5. Slash command\
-    \ files persist across sessions and execute arbitrary shell on invocation \u2014\
-    \ any Bash-level write to this directory warrants explicit approval. Read-only\
-    \ access (ls, cat, grep) is flagged as well since reconnoitering the commands\
-    \ directory is a precursor to targeted injection. Asks rather than denies because\
-    \ legitimate maintenance tasks (listing commands, reading existing ones) also\
-    \ match."
-  expression: is_bash_commands_write
-  action: ask
-  message: Falco requires confirmation before a Bash command accesses the Claude slash
-    command directory (%tool.input_command%)
-- name: Ask before writing to Claude Code subagent definitions directory
-  description: "Requires user confirmation when the agent writes or edits files under\
-    \ ~/.claude/agents/. This directory holds custom subagent definitions \u2014 markdown\
-    \ files with YAML frontmatter that Claude Code reads as system prompt context\
-    \ for spawned subagents. A new or modified definition is a persistent prompt-injection\
-    \ vector: every future invocation of that subagent runs with attacker-controlled\
-    \ instructions. Legitimate subagent setup is user-driven (via the Claude CLI or\
-    \ marketplace); the coding agent has no need to author other agents' instructions."
-  expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path .contains("/.claude/agents/")
-  action: ask
-  message: Falco requires confirmation before writing a Claude Code subagent definition
-    at %tool.real_file_path%
-- name: Ask before writing to Claude Code skills directory
-  description: "Requires user confirmation when the agent writes or edits files under\
-    \ ~/.claude/skills/. Skills are markdown definitions that Claude Code pulls into\
-    \ context to extend its behavior \u2014 they describe workflows, tool sequences,\
-    \ and reference external resources. Writing or editing a skill is the skill-layer\
-    \ equivalent of editing a slash command and carries the same persistence risk.\
-    \ Legitimate skill installation flows through the Claude CLI or the marketplace;\
-    \ direct file authoring by the agent warrants explicit approval."
-  expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path .contains("/.claude/skills/")
-  action: ask
-  message: Falco requires confirmation before writing a Claude Code skill at %tool.real_file_path%
-- name: Ask before writing to Claude Code plugins directory
-  description: "Requires user confirmation when the agent writes or edits files under\
-    \ ~/.claude/plugins/. The plugins tree holds installed-plugin metadata (installed_plugins.json),\
-    \ known marketplaces, the marketplace blocklist, and cached plugin payloads. Plugins\
-    \ can register MCP servers, hooks, skills, and slash commands \u2014 modifying\
-    \ this tree directly bypasses the official install flow's review steps. Legitimate\
-    \ installs are user-initiated via the Claude CLI; agent-driven Write/Edit here\
-    \ is a supply-chain attack surface."
-  expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path .contains("/.claude/plugins/")
-  action: ask
-  message: Falco requires confirmation before writing to Claude Code plugin storage
-    at %tool.real_file_path%
-- name: Ask before writing to Claude Code settings backups directory
-  description: "Requires user confirmation when the agent writes or edits files under\
-    \ ~/.claude/backups/. Claude Code keeps timestamped backups of settings (.claude.json.backup.<epoch>)\
-    \ here. An agent writing into this tree could stage a malicious settings file\
-    \ that the user later restores manually, sidestepping the direct settings.json\
-    \ deny rule. Reads are not flagged \u2014 the directory is otherwise routine."
-  expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path .contains("/.claude/backups/")
-  action: ask
-  message: Falco requires confirmation before writing to Claude Code settings backups
-    at %tool.real_file_path%
-- name: Ask before agent writing hooks into Claude Code settings
-  description: "Requires user confirmation when the agent writes or edits a Claude\
-    \ Code settings file (~/.claude/settings.json or .claude/settings.json) with content\
-    \ matching the \"hooks\" keyword. Claude Code's hooks mechanism runs arbitrary\
-    \ external commands before or after every tool call \u2014 it is the same mechanism\
-    \ Prempti uses to intercept tool calls. The agent has no legitimate reason to\
-    \ modify its own hook configuration \u2014 hook registration is an installer/admin\
-    \ task, not an agent task. Asks rather than denies because the \"hooks\" substring\
-    \ also surfaces in unrelated edits to settings.json (an existing hooks block captured\
-    \ in old_string/new_string when editing a sibling key, the word \"hooks\" in benign\
-    \ content like \"react-hooks\" or comments)."
-  expression: is_claude_settings_write && is_settings_hooks_content
-  action: ask
-  message: Falco requires confirmation before %agent.name% writes a hooks entry into
-    Claude Code settings at %tool.real_file_path%
-- name: Ask before agent registering MCP servers in Claude settings
-  description: Requires user confirmation when the agent writes or edits a Claude
-    Code settings file with an mcpServers key. MCP servers registered in settings.json
-    persist across all projects (user-level) or all sessions in a project (project-level)
-    and grant the agent access to new external tool surfaces. Section 5 covers the
-    standalone .mcp.json and managed-mcp.json files; this rule closes the settings.json
-    registration path that bypasses those checks.
-  expression: is_claude_settings_write && is_settings_mcp_content
-  action: ask
-  message: Falco requires confirmation before %agent.name% registers an MCP server
-    in Claude Code settings at %tool.real_file_path%
-- name: Ask before writing to git hooks directory
-  description: "Requires user confirmation when the agent writes or edits a file inside\
-    \ a .git/hooks/ directory. Git hooks execute automatically on git operations (commit,\
-    \ push, checkout, merge) for the lifetime of the repository clone \u2014 they\
-    \ persist long after the Claude session ends and run outside any sandbox. Writing\
-    \ a malicious pre-commit or post-checkout hook is a reliable persistence mechanism\
-    \ that survives agent restarts and is not visible in project source files. Asks\
-    \ rather than denies because legitimate use cases exist: setting up linters, formatters,\
-    \ or commit message validators via hook scripts."
-  expression: is_git_hooks_write
-  action: ask
-  message: Falco requires confirmation before writing a git hook at %tool.real_file_path%
-- name: Ask before writing package registry redirect
-  description: "Requires user confirmation when the agent writes or edits a package\
-    \ manager configuration file (.npmrc, .pypirc, pip.conf) with content that redirects\
-    \ package downloads to a custom registry or index. Once committed, a registry\
-    \ redirect causes every subsequent npm install, pip install, or yarn add in the\
-    \ project to download packages from the configured endpoint \u2014 a supply chain\
-    \ pivot where a single compromised package can inject malicious code into all\
-    \ future dependency installs. Legitimate corporate uses (Artifactory, Nexus, private\
-    \ PyPI) exist, so this rule asks rather than denies."
-  expression: is_registry_config_write && is_registry_redirect_content
-  action: ask
-  message: Falco requires confirmation before writing a package registry redirect
-    to %tool.real_file_path%
-- name: Ask before API base URL override in environment file
-  description: "Requires user confirmation when the agent writes or edits an environment\
-    \ file (.env, .envrc, .env.local, etc.) with content that sets ANTHROPIC_BASE_URL,\
-    \ OPENAI_BASE_URL, or OPENAI_API_BASE. These variables redirect every API call\
-    \ made by the agent (and any application code that sources the file) through the\
-    \ specified endpoint. An attacker-controlled proxy at that URL can read all prompts\
-    \ and responses, inject malicious tool call results, or silently modify agent\
-    \ instructions in transit. Asks rather than denies because corporate proxies and\
-    \ self-hosted gateways (Anthropic-compatible endpoints, OpenAI-compatible inference\
-    \ servers) are legitimate uses \u2014 the user is the right party to confirm the\
-    \ endpoint."
-  expression: is_env_file_write && is_api_base_url_override
-  action: ask
-  message: Falco requires confirmation before %agent.name% overrides an AI API base
-    URL in %tool.real_file_path%
-- name: Ask before writing AI API key to environment file
-  description: 'Requires user confirmation when the agent writes or edits an environment
-    file (.env, .envrc, .env.local, .env.staging, .env.test, etc.) with content containing
-    an AI provider API key variable (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY).
-    Writing the active API key to a file creates two risks: (1) the file may be committed
-    to version control and exposed publicly, and (2) it stages the credential for
-    exfiltration via a subsequent curl or upload command. Asks rather than denies
-    because legitimate project setup workflows (creating .env.example, wiring up a
-    new application) do write API key variable names to environment files.'
-  expression: is_env_file_write && is_api_key_in_env
-  action: ask
-  message: Falco requires confirmation before %agent.name% writes an AI API key variable
-    to %tool.real_file_path%
-- name: Ask before Bash command accessing git hooks directory
-  description: Requires user confirmation when a Bash command references a .git/hooks/
-    directory path. Shell redirections (echo >, tee, cp, chmod +x) can write or activate
-    persistent git hooks without using the Write or Edit tools, bypassing Rule 3.
-    Git hooks execute automatically on git operations and persist long after the agent
-    session ends. Asks rather than denies because legitimate devops tasks (installing
-    pre-commit linters, auditing hooks) also involve referencing this path.
-  expression: is_bash_git_hooks_write
-  action: ask
-  message: Falco requires confirmation before a Bash command accesses the git hooks
-    directory (%tool.input_command%)
-- name: Ask before Bash command redirecting package registry
-  description: 'Requires user confirmation when a Bash command runs a package manager
-    CLI-level registry redirect: npm config set registry, npm set registry, pip config
-    set global.index-url, or pip config set global.extra-index-url. These commands
-    modify the user''s global package manager config, redirecting all future package
-    installs to the specified endpoint. Unlike file writes (caught by Rule 4), these
-    CLI commands modify config atomically via the package manager''s own write path,
-    bypassing Write/Edit tool detection.'
-  expression: tool.name == "Bash" && is_bash_registry_redirect
-  action: ask
-  message: Falco requires confirmation before a Bash command redirects the package
-    registry (%tool.input_command%)
-- name: Deny premptictl invocation
-  description: "Blocks any agent invocation of the premptictl CLI. premptictl is a\
-    \ user-facing tool \u2014 the user runs it directly in their own shell and never\
-    \ needs the coding agent to do it on their behalf. Denying every subcommand (stop\
-    \ / restart / disable / uninstall / daemon / hook / mode and the read-only status\
-    \ / health / logs commands) prevents service-disabling, reconfiguration, and reconnaissance\
-    \ through the Prempti control surface."
-  expression: is_premptictl_invocation
-  action: deny
-  message: Falco blocked an agent invocation of the premptictl CLI (%tool.input_command%)
-- name: Deny service-stop alternatives targeting Prempti
-  description: 'Blocks platform-specific commands that would stop Falco / unregister
-    the Prempti service outside of the premptictl CLI: systemd stop / disable on Linux,
-    launchctl unload / bootout on macOS, taskkill / Stop-Service / Run-key delete
-    on Windows, plus pkill/killall variants against the falco process. Gated on agent.os
-    so each pattern only fires on its native platform.'
-  expression: is_service_stop_linux || is_service_stop_macos || is_service_stop_windows
-  action: deny
-  message: Falco blocked a platform service-stop command targeting Prempti (%tool.input_command%)
-- name: Deny writes under Prempti install prefix
-  description: "Blocks Write/Edit on any path under the Prempti install prefix (~/.prempti/\
-    \ on Unix, %LOCALAPPDATA%\\\\prempti\\\\ on Windows). This covers binaries, Falco\
-    \ and plugin config, the supervisor config, and both default and user rule files\
-    \ under rules/ \u2014 all of which govern how Prempti enforces policy. Reads are\
-    \ allowed so the agent can still introspect config / logs for debugging. Legitimate\
-    \ edits (custom rules, config changes) are user-driven: edit files under rules/user/\
-    \ directly outside a coding session, then `premptictl restart` to apply."
-  expression: is_write_tool && is_prempti_install_path
-  action: deny
-  message: Falco blocked writing to %tool.real_file_path% under the Prempti install
-    prefix
-- name: Deny writes to Claude Code settings file
-  description: Blocks Write/Edit on ~/.claude/settings.json. The Prempti hook lives
-    here; modifying the file is the most direct way for an agent to unregister the
-    interceptor. Use `premptictl hook` for legitimate hook lifecycle.
-  expression: is_write_tool && is_claude_settings_path
-  action: deny
-  message: Falco blocked writing to Claude Code settings at %tool.real_file_path%
-- name: Deny writes to Claude Code policy limits file
-  description: Blocks Write/Edit on ~/.claude/policy-limits.json. This file declares
-    enforcement restrictions that Claude Code reads to decide which features are blocked
-    or allowed (allow_remote_control, enforce_web_search_mcp_isolation, allow_quick_web_setup,
-    etc.). Modifying it loosens the user's or MDM's intended security posture and
-    could re-enable surfaces Prempti relies on the host to keep closed. Policy limits
-    are configured by the user or an enterprise MDM; the agent has no legitimate reason
-    to write here.
-  expression: is_write_tool && tool.real_file_path .endsWith("/.claude/policy-limits.json")
-  action: deny
-  message: Falco blocked writing to Claude Code policy-limits.json at %tool.real_file_path%
-- name: Ask before reading Claude Code settings file
-  description: "Asks before the agent reads ~/.claude/settings.json. The file is sensitive\
-    \ \u2014 it lists every hook the user has configured. Reads have legitimate uses\
-    \ (debugging hook registration), but the user should confirm."
-  expression: tool.name == "Read" && is_claude_settings_path
-  action: ask
-  message: Falco requires confirmation to read Claude Code settings at %tool.real_file_path%
+  # -------------------------------------------------------------------------
+  # Working Directory / File Boundaries
+  # -------------------------------------------------------------------------
+
+  - name: Monitor activity outside working directory
+    description: "Logs when a coding agent reads, writes, or edits files outside the session's working directory. Informational only — does not block."
+    expression: tool.name in ["Write", "Edit", "Read"] && tool.real_file_path != "" && is_outside_cwd
+    action: allow
+    message: Model Armor detected access to %tool.real_file_path% which is outside the working directory %agent.real_cwd%
+
+  - name: Ask before writing outside working directory
+    description: "Requires user confirmation when a coding agent writes or edits a file outside the session's working directory. Excludes ~/.claude/ routine bookkeeping."
+    expression: is_write_tool && tool.real_file_path != "" && is_outside_cwd && !is_sensitive_path && !is_claude_data_path
+    action: ask
+    message: Model Armor requires confirmation to write to %tool.real_file_path% because it is outside the working directory %agent.real_cwd%
+
+  - name: Deny reading sensitive paths
+    description: Blocks reads from sensitive filesystem locations such as ~/.ssh/, cloud credential directories, and environment variable files.
+    expression: tool.name == "Read" && is_sensitive_path
+    action: deny
+    message: Model Armor blocked reading %tool.real_file_path% because it is a sensitive path
+
+  - name: Deny writing to sensitive paths
+    description: Blocks writes to sensitive filesystem locations such as /etc/, ~/.ssh/, and cloud credential directories.
+    expression: is_write_tool && is_sensitive_path
+    action: deny
+    message: Model Armor blocked writing to %tool.real_file_path% because it is a sensitive path
+
+  # -------------------------------------------------------------------------
+  # Sandbox Evasion & Escapes
+  # -------------------------------------------------------------------------
+
+  - name: Ask before agent writing sandbox-disable configuration
+    description: "Requires user confirmation when a coding agent writes or edits its own sandbox configuration file with content that may disable OS-level process isolation."
+    expression: is_write_tool && tool.real_file_path != "" && is_agent_sandbox_config && is_sandbox_disable_content
+    action: ask
+    message: Model Armor requires confirmation before %agent.name% modifies its sandbox configuration at %tool.real_file_path%
+
+  - name: Ask before Claude Code per-command sandbox escape
+    description: "Requires user confirmation when Claude Code invokes the Bash tool with dangerouslyDisableSandbox set to true."
+    expression: tool.name == "Bash" && tool.input.contains("dangerouslyDisableSandbox") && tool.input.contains("true")
+    action: ask
+    message: Model Armor requires confirmation before Claude Code runs an unsandboxed Bash command (%tool.input_command%)
+
+  - name: Deny Bash command writing sandbox-disable content to agent settings file
+    description: Blocks Bash commands that reference an agent settings file path combined with sandbox-disabling content.
+    expression: tool.name == "Bash" && is_bash_sandbox_settings_path && is_bash_sandbox_disable_cmd
+    action: deny
+    message: Model Armor blocked %agent.name% from disabling its sandbox via Bash command:%tool.input_command%
+
+  - name: Deny Codex CLI sandbox bypass flag
+    description: Blocks Bash invocations of the Codex CLI with flags that bypass sandbox isolation.
+    expression: tool.name == "Bash" && is_codex_sandbox_bypass
+    action: deny
+    message: Model Armor blocked %agent.name% from starting Codex with a sandbox bypass flag (%tool.input_command%)
+
+  - name: Deny Gemini CLI sandbox disable via environment variable
+    description: Blocks Bash commands that set GEMINI_SANDBOX to a disabling value.
+    expression: tool.name == "Bash" && is_gemini_sandbox_env_bypass
+    action: deny
+    message: Model Armor blocked %agent.name% from disabling Gemini sandbox via environment variable (%tool.input_command%)
+
+  - name: Deny Bash command replacing agent sandbox settings file
+    description: "Blocks Bash commands that replace an agent sandbox settings file via cp, mv, or sed -i."
+    expression: tool.name == "Bash" && is_bash_sandbox_settings_replace
+    action: deny
+    message: Model Armor blocked %agent.name% from replacing an agent sandbox settings file (%tool.input_command%)
+
+  # -------------------------------------------------------------------------
+  # Shell Command Injection & Host Abuse
+  # -------------------------------------------------------------------------
+
+  - name: Deny credential file access via Bash
+    description: Blocks Bash commands that reference credential files or secret environment variable names.
+    expression: is_bash && references_credential
+    action: deny
+    message: Model Armor blocked a Bash command referencing a credential path or secret token (%tool.input_command%)
+
+  - name: Deny credential file access via Read tool
+    description: Blocks Read tool calls targeting well-known credential file paths.
+    expression: is_read_credential_path
+    action: deny
+    message: Model Armor blocked the Read tool accessing a credential file at %tool.real_file_path%
+
+  - name: Deny destructive system commands
+    description: Blocks shell commands whose substrings unambiguously indicate a destructive or privilege-elevating operation.
+    expression: is_bash && is_destructive_command
+    action: deny
+    message: Model Armor blocked a destructive system command (%tool.input_command%)
+
+  - name: Ask before potentially destructive shell commands
+    description: Requires user confirmation before commands whose dangerous form overlaps with legitimate development workflows.
+    expression: is_bash && is_likely_destructive_command && !is_pure_search_or_print_command
+    action: ask
+    message: Model Armor requires confirmation before a potentially destructive shell command (%tool.input_command%)
+
+  - name: Ask before container privilege escalation or host breakout
+    description: Requires user confirmation before Bash commands that grant a container host-equivalent power.
+    expression: is_bash && is_container_privilege_escalation
+    action: ask
+    message: Model Armor requires confirmation before %agent.name% runs a container command that escalates privileges (%tool.input_command%)
+
+  - name: Deny pipe to shell interpreter
+    description: Blocks Bash commands that pipe network-fetched or generated content directly into a shell interpreter.
+    expression: is_bash && is_pipe_to_shell
+    action: deny
+    message: Model Armor blocked piping content to a shell interpreter (%tool.input_command%)
+
+  - name: Deny encoded payload execution
+    description: Blocks execution of base64-decoded or hex-decoded payloads and inline interpreter one-liners.
+    expression: is_bash && is_encoded_exec
+    action: deny
+    message: Model Armor blocked execution of a potentially encoded or inline-interpreted payload (%tool.input_command%)
+
+  - name: Deny curl wget exfiltration
+    description: Blocks outbound data transfers via curl or wget that POST, upload, or pipe data.
+    expression: is_bash && is_curl_exfil
+    action: deny
+    message: Model Armor blocked a potential data exfiltration command via curl or wget (%tool.input_command%)
+
+  - name: Ask before writing to tmp staging paths
+    description: Requires user confirmation for Write and Edit operations targeting temp paths.
+    expression: is_write_tool && tool.real_file_path != "" && is_tmp_path
+    action: ask
+    message: Model Armor requires confirmation before writing to the staging path %tool.real_file_path%
+
+  - name: Deny reverse shell via Bash
+    description: Blocks Bash commands that establish reverse shell connections.
+    expression: is_bash && is_reverse_shell
+    action: deny
+    message: Model Armor blocked a reverse shell command (%tool.input_command%)
+
+  - name: Deny cloud metadata service access via Bash
+    description: Blocks curl and wget requests to cloud instance metadata services.
+    expression: is_bash && is_imds_access
+    action: deny
+    message: Model Armor blocked access to a cloud metadata service (%tool.input_command%)
+
+  - name: Deny credential directory archive via Bash
+    description: Blocks shell commands that compress credential directories.
+    expression: is_bash && is_credential_archive
+    action: deny
+    message: Model Armor blocked archiving a credential directory (%tool.input_command%)
+
+  - name: Deny SSH reverse tunnel and SOCKS proxy
+    description: Blocks SSH commands using reverse port forwarding, SOCKS proxy, or VPN tunnel flags.
+    expression: is_bash && is_ssh_tunnel
+    action: deny
+    message: Model Armor blocked an SSH tunneling or proxy command (%tool.input_command%)
+
+  - name: Ask before cron and scheduled task manipulation
+    description: Requires confirmation before crontab modifications or writes targeting /etc/cron directories.
+    expression: is_bash && is_cron_persistence
+    action: ask
+    message: Model Armor requires confirmation before modifying cron configuration (%tool.input_command%)
+
+  - name: Deny audit trail destruction
+    description: Blocks commands that wipe shell history.
+    expression: is_bash && is_history_wipe
+    action: deny
+    message: Model Armor blocked a shell history wipe attempt (%tool.input_command%)
+
+  - name: Deny package publish
+    description: Blocks publishing commands across major ecosystems.
+    expression: is_bash && is_package_publish
+    action: deny
+    message: Model Armor blocked a package publish command (%tool.input_command%)
+
+  # -------------------------------------------------------------------------
+  # Persistent Injection & Supply Chain Security
+  # -------------------------------------------------------------------------
+
+  - name: Ask before modifying shell startup files
+    description: Requires confirmation when writing or editing shell startup files (.bashrc, .zshrc, etc.).
+    expression: is_write_tool && tool.file_path != "" && tool.file_name in shell_startup_files
+    action: ask
+    message: Model Armor requires confirmation before modifying shell startup file %tool.real_file_path%
+
+  - name: Ask before writing agent instruction files outside working directory
+    description: Requires confirmation when writing or editing agent instruction files outside the working directory.
+    expression: is_write_tool && tool.file_path != "" && tool.file_name in agent_instruction_files && tool.real_file_path != "" && is_outside_cwd
+    action: ask
+    message: Model Armor requires confirmation before writing agent instruction file %tool.real_file_path% outside working directory %agent.real_cwd%
+
+  - name: Deny cross-agent authentication file access
+    description: Blocks reads of another agent's OAuth or session credential files.
+    expression: is_cross_agent_auth_read
+    action: deny
+    message: Model Armor blocked %agent.name% from reading another agent's authentication file %tool.real_file_path%
+
+  - name: Deny MCP server or skill install from untrusted host
+    description: Blocks package manager installation commands that reference known malicious code hosting sites.
+    expression: is_bash && is_mcp_install_from_untrusted
+    action: deny
+    message: Model Armor blocked installing a package or skill from an untrusted host (%tool.input_command%)
+
+  - name: Deny MCP server execution from temporary directory
+    description: Blocks execution of processes using MCP transport flags from temp directories.
+    expression: is_bash && is_mcp_temp_path
+    action: deny
+    message: Model Armor blocked executing a potential MCP server from a temporary directory (%tool.input_command%)
+
+  - name: Ask before Glob with credential directory patterns
+    description: Requires confirmation when the Glob tool is used with patterns that target credential directories.
+    expression: is_credential_glob
+    action: ask
+    message: Model Armor requires confirmation before globbing with a credential-targeting pattern (%tool.input%)
+
+  - name: Deny MCP config with command from temporary directory
+    description: Blocks writing an MCP server configuration file where the server command field points to a temporary directory.
+    expression: is_mcp_config_write && is_mcp_command_temp
+    action: deny
+    message: Model Armor blocked writing an MCP server config with a command path in temporary storage at %tool.real_file_path%
+
+  - name: Deny MCP config with IOC domain in server URL
+    description: Blocks writing an MCP server configuration file that includes a known malicious domain in the url field.
+    expression: is_mcp_config_write && contains_ioc_domain
+    action: deny
+    message: Model Armor blocked writing an MCP server config with a malicious hosting domain in the server URL at %tool.real_file_path%
+
+  - name: Ask before MCP config with encoded server command
+    description: Requires user confirmation when writing an MCP server configuration file that contains the substring "base64".
+    expression: is_mcp_config_write && is_mcp_command_encoded
+    action: ask
+    message: Model Armor requires confirmation before writing an MCP server config that references base64 at %tool.real_file_path%
+
+  - name: Ask before agent self-registering MCP server
+    description: Requires user confirmation when the agent invokes commands to self-register MCP servers or plugins.
+    expression: tool.name == "Bash" && is_mcp_self_register
+    action: ask
+    message: Model Armor requires confirmation before the agent self-registers an MCP server or plugin (%tool.input_command%)
+
+  - name: Ask before writing to Claude slash command directory
+    description: Requires user confirmation when the agent writes or edits files under .claude/commands/.
+    expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/commands/")
+    action: ask
+    message: Model Armor requires confirmation before writing a Claude slash command at %tool.real_file_path%
+
+  - name: Ask before writing CLAUDE.md outside working directory
+    description: Requires user confirmation when the agent writes or edits a CLAUDE.md file outside the current working directory.
+    expression: is_write_tool && tool.file_path != "" && tool.file_name == "CLAUDE.md" && tool.real_file_path != "" && is_outside_cwd
+    action: ask
+    message: Model Armor requires confirmation before writing CLAUDE.md at %tool.real_file_path% outside working directory %agent.real_cwd%
+
+  - name: Deny skill command file with IOC domain in content
+    description: Blocks writing a skill or slash command file whose content references a known malicious domain.
+    expression: is_write_tool && tool.real_file_path != "" && is_skill_content_ioc
+    action: deny
+    message: Model Armor blocked writing a skill file with a malicious hosting domain in its content at %tool.real_file_path%
+
+  - name: Deny skill command file with pipe-to-shell in content
+    description: Blocks writing a skill or slash command file whose content contains a pipe-to-shell pattern.
+    expression: is_write_tool && tool.real_file_path != "" && is_skill_pipe_bash
+    action: deny
+    message: Model Armor blocked writing a skill file with a pipe-to-shell pattern in its content at %tool.real_file_path%
+
+  - name: Ask before npx auto-accept MCP or skill installation
+    description: Requires user confirmation when package install command bypasses the "install this package?" review step.
+    expression: tool.name == "Bash" && is_npx_auto_accept_mcp_skill
+    action: ask
+    message: Model Armor requires confirmation before auto-accepting package installation for an MCP server or skill (%tool.input_command%)
+
+  - name: Ask before Bash command writing to Claude slash command directory
+    description: Requires user confirmation when a Bash command references the .claude/commands/ directory.
+    expression: is_bash_commands_write
+    action: ask
+    message: Model Armor requires confirmation before a Bash command accesses the Claude slash command directory (%tool.input_command%)
+
+  - name: Ask before writing to Claude Code subagent definitions directory
+    description: Requires user confirmation when the agent writes or edits files under ~/.claude/agents/.
+    expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/agents/")
+    action: ask
+    message: Model Armor requires confirmation before writing a Claude Code subagent definition at %tool.real_file_path%
+
+  - name: Ask before writing to Claude Code skills directory
+    description: Requires user confirmation when the agent writes or edits files under ~/.claude/skills/.
+    expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/skills/")
+    action: ask
+    message: Model Armor requires confirmation before writing a Claude Code skill at %tool.real_file_path%
+
+  - name: Ask before writing to Claude Code plugins directory
+    description: Requires user confirmation when the agent writes or edits files under ~/.claude/plugins/.
+    expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/plugins/")
+    action: ask
+    message: Model Armor requires confirmation before writing to Claude Code plugin storage at %tool.real_file_path%
+
+  - name: Ask before writing to Claude Code settings backups directory
+    description: Requires user confirmation when the agent writes or edits files under ~/.claude/backups/.
+    expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/backups/")
+    action: ask
+    message: Model Armor requires confirmation before writing to Claude Code settings backups at %tool.real_file_path%
+
+  - name: Ask before agent writing hooks into Claude Code settings
+    description: Requires user confirmation when the agent writes or edits settings with hooks configuration.
+    expression: is_claude_settings_write && is_settings_hooks_content
+    action: ask
+    message: Model Armor requires confirmation before %agent.name% writes a hooks entry into Claude Code settings at %tool.real_file_path%
+
+  - name: Ask before agent registering MCP servers in Claude settings
+    description: Requires user confirmation when the agent writes or edits settings with mcpServers configuration.
+    expression: is_claude_settings_write && is_settings_mcp_content
+    action: ask
+    message: Model Armor requires confirmation before %agent.name% registers an MCP server in Claude Code settings at %tool.real_file_path%
+
+  - name: Ask before writing to git hooks directory
+    description: Requires user confirmation when the agent writes or edits a file inside a .git/hooks/ directory.
+    expression: is_git_hooks_write
+    action: ask
+    message: Model Armor requires confirmation before writing a git hook at %tool.real_file_path%
+
+  - name: Ask before writing package registry redirect
+    description: Requires user confirmation when the agent redirects package manager config downloads to a custom registry.
+    expression: is_registry_config_write && is_registry_redirect_content
+    action: ask
+    message: Model Armor requires confirmation before writing a package registry redirect to %tool.real_file_path%
+
+  - name: Ask before API base URL override in environment file
+    description: Requires user confirmation when environment files override AI base URLs.
+    expression: is_env_file_write && is_api_base_url_override
+    action: ask
+    message: Model Armor requires confirmation before %agent.name% overrides an AI API base URL in %tool.real_file_path%
+
+  - name: Ask before writing AI API key to environment file
+    description: Requires user confirmation when environment files contain AI provider API key variables.
+    expression: is_env_file_write && is_api_key_in_env
+    action: ask
+    message: Model Armor requires confirmation before %agent.name% writes an AI API key variable to %tool.real_file_path%
+
+  - name: Ask before Bash command accessing git hooks directory
+    description: Requires user confirmation when a Bash command references a .git/hooks/ directory path.
+    expression: is_bash_git_hooks_write
+    action: ask
+    message: Model Armor requires confirmation before a Bash command accesses the git hooks directory (%tool.input_command%)
+
+  - name: Ask before Bash command redirecting package registry
+    description: Requires user confirmation when a Bash command redirects global package manager configs.
+    expression: tool.name == "Bash" && is_bash_registry_redirect
+    action: ask
+    message: Model Armor requires confirmation before a Bash command redirects the package registry (%tool.input_command%)
+
+  - name: Deny writes to Claude Code settings file
+    description: Blocks Write/Edit on ~/.claude/settings.json.
+    expression: is_write_tool && is_claude_settings_path
+    action: deny
+    message: Model Armor blocked writing to Claude Code settings at %tool.real_file_path%
+
+  - name: Deny writes to Claude Code policy limits file
+    description: Blocks Write/Edit on ~/.claude/policy-limits.json.
+    expression: is_write_tool && tool.real_file_path.endsWith("/.claude/policy-limits.json")
+    action: deny
+    message: Model Armor blocked writing to Claude Code policy-limits.json at %tool.real_file_path%
+
+  - name: Ask before reading Claude Code settings file
+    description: Asks before the agent reads ~/.claude/settings.json.
+    expression: tool.name == "Read" && is_claude_settings_path
+    action: ask
+    message: Model Armor requires confirmation to read Claude Code settings at %tool.real_file_path%

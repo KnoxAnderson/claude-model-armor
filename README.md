@@ -1,134 +1,63 @@
-# Model Armor MCP Server for Claude Code
+# Claude Model Armor Guardrails
 
-This project implements a Model Context Protocol (MCP) server that allows Claude Code to use Google Cloud Model Armor to scan content for safety risks, including prompt injection, jailbreak attempts, and sensitive data exposure.
+A high-performance, dual-layer security guardrail system for Claude Code, written in Go for maximum execution speed and minimal latency overhead. It operates as both a deterministic local policy engine and a cloud-based content safety filter.
 
-## Features
+## Dual-Layer Security Architecture
 
-Model Armor provides four primary pillars of protection, which this server can leverage:
+This plugin protects your environment using two complementary security layers:
 
-1.  **Prompt Injection & Jailbreak Detection**: Detects attempts to manipulate the model's behavior or bypass safety guardrails.
-2.  **Sensitive Data Protection (SDP)**: Scans for and identifies Personally Identifiable Information (PII).
-    *   *Basic Configuration*: Screens for a fixed set of common infoTypes (e.g., Credit card numbers, US SSNs, credentials).
-    *   *Advanced Configuration*: Supports de-identification (masking/redacting) using custom templates.
-3.  **Responsible AI (RAI) Safety Filters**: Screens content for categories like `HATE_SPEECH`, `HARASSMENT`, `SEXUALLY_EXPLICIT`, and `DANGEROUS` content.
-4.  **Malicious URL Detection**: Identifies phishing links and known web threats (scans the first 40 URLs in the text).
-
-*Note: The default implementation in this server enables **Prompt Injection Detection** and **Basic SDP**.*
-
-## Prerequisites
-
-1.  **Google Cloud Project**: You need a Google Cloud project with the Model Armor API enabled.
-2.  **Authentication**: You must be authenticated with Google Cloud (e.g., via `gcloud auth application-default login` or by setting `GOOGLE_APPLICATION_CREDENTIALS`).
-3.  **Environment Variable**: You must set the `GOOGLE_CLOUD_PROJECT` environment variable.
-
-## Installation
-
-1.  Install the required Python packages:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Configuration for Claude Code
-
-Add the following to your Claude Code configuration (e.g., in `~/.claude/config.json`):
-
-```json
-{
-  "mcpServers": {
-    "model-armor": {
-      "command": "python",
-      "args": ["/Users/knoxanderson/.gemini/jetski/scratch/claude-model-armor/model_armor_server.py"],
-      "env": {
-        "GOOGLE_CLOUD_PROJECT": "your-project-id"
-      }
-    }
-  }
-}
+```
+[Claude Code Tool Call]
+          │
+          ▼
+┌──────────────────────────────────────────────┐
+│  Layer 1: Deterministic CEL Rules (Local)   │
+│  - Blocks sensitive path access (/etc, .ssh) │
+│  - Prevents sandbox-disable configurations   │
+│  - Intercepts destructive shell commands    │
+│  - Restricts operations outside CWD          │
+└──────────────────────┬───────────────────────┘
+                       │ (if allowed)
+                       ▼
+┌──────────────────────────────────────────────┐
+│   Layer 2: Cloud Model Armor (GCP Service)   │
+│  - Screens command/file text via APIs        │
+│  - Detects Prompt Injection & Jailbreaks     │
+│  - Scans for PII / Sensitive Data (SDP)      │
+│  - Blocks Malicious URIs & RAI violations    │
+└──────────────────────┬───────────────────────┘
+                       │ (if allowed)
+                       ▼
+             [Execute Tool Call]
 ```
 
-Replace `"your-project-id"` with your actual Google Cloud project ID.
+### 1. Deterministic Local Rules (CEL Engine)
+Powered by `google/cel-go`, this layer evaluates coding agent tool calls (Read, Write, Edit, Bash) against a structured local rule set before execution. 
 
-## Customization
+By default, it includes **60+ rules** designed for local system safety and agent containment:
+*   **Path Protection**: Prevents reads or writes to system files (`/etc`, `/var`, `/boot`), GPG, SSH keys, AWS/GCP cloud credentials, and browser databases.
+*   **Sandbox Enforcement**: Intercepts requests to disable Claude Code's OS-level process sandboxing or to bypass approval dialogs.
+*   **Destructive Shell Commands**: Denies highly destructive shell pipelines (e.g., `sudo su`, `mkfs`, `dd`, `rm -rf /`).
+*   **WorkingDirectory Boundary**: Restricts the agent from writing files outside the active workspace directory unless confirmed by the user.
 
-You can customize the filters by editing the `get_or_create_template` function in `model_armor_server.py`. For example, to enable Malicious URL detection, you can add:
+### 2. Cognitive Cloud Safety (Google Cloud Model Armor)
+Integrates with Google Cloud Model Armor to check the inputs and outputs of commands and files.
+*   **PII & Sensitive Data Protection (SDP)**: Redacts or flags exposure of sensitive data like social security numbers, credit cards, or API credentials.
+*   **Prompt Injection Detection**: Blocks hidden instructions in files or downloaded materials trying to hijack the agent.
+*   **Responsible AI (RAI)**: Filters hate speech, harassment, sexually explicit, and dangerous content.
+*   **Phishing & Malicious URLs**: Screens URLs present in commands or file edits.
 
-```python
-malicious_uri_filter_settings=modelarmor_v1.MaliciousUriFilterSettings(
-    filter_enforcement=modelarmor_v1.MaliciousUriFilterSettings.MaliciousUriFilterEnforcement.ENABLED
-)
-```
+---
 
-## Usage
+## Deployment Modes
 
-Once configured, Claude will have access to the `scan_content` tool. You can ask it to scan text:
+The plugin can be integrated into Claude Code in two ways:
 
-*"Check this text for prompt injection and PII: [your text here]"*
+### A. PreToolUse Hook Mode (Recommended)
+Intercepts tool execution *before* it happens, returning `allow`, `deny`, or `ask` (which prompts the user to confirm).
 
-## PreToolUse Hook Mode (CEL Rules Engine)
-
-This plugin can also act as a Claude Code `PreToolUse` hook to evaluate coding agent actions against local security rules (defined in CEL) and Google Cloud Model Armor.
-
-### Registration in Claude Code
-
-Add the hook command to your Claude Code settings (e.g., in `~/.claude/settings.json`):
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/knoxanderson/.gemini/jetski/scratch/claude-model-armor/venv/bin/python",
-            "args": [
-              "/Users/knoxanderson/.gemini/jetski/scratch/claude-model-armor/model_armor_server.py",
-              "--hook"
-            ]
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-### Custom Rules
-
-Rules are loaded from `rules.yaml` in the same directory. Each rule consists of a CEL expression, an action (`allow` | `deny` | `ask`), and a formatting message.
-
-Example rule in `rules.yaml`:
-```yaml
-rules:
-  - name: deny_sensitive_paths
-    description: "Prevent reading or writing to sensitive system or credential paths"
-    expression: |
-      tool.name in ["Write", "Edit", "Read"] && (
-        tool.real_file_path.startsWith("/etc/") ||
-        tool.real_file_path.contains("/.ssh/")
-      )
-    action: deny
-    message: "Falco CEL blocked access to sensitive path: %tool.real_file_path%"
-```
-
-## Go Implementation (High-Performance Engine)
-
-The project includes a Go port of the MCP server and PreToolUse hook engine. This implementation uses the official Google Cloud Model Armor Go SDK and `google/cel-go` for high-performance rule evaluations.
-
-### Building the Go Binary
-
-Ensure Go is installed (Go 1.23+ is recommended), then build:
-
-```bash
-go build -o claude-model-armor main.go
-```
-
-### Running with Claude Code
-
-#### As a PreToolUse Hook
-
-Register the compiled binary in `~/.claude/settings.json`:
+#### Registration
+Add the hook to your Claude Code settings (e.g., in `~/.claude/settings.json`):
 
 ```json
 {
@@ -151,9 +80,11 @@ Register the compiled binary in `~/.claude/settings.json`:
 }
 ```
 
-#### As an MCP Server
+### B. MCP Server Mode
+Exposes a `scan_content` tool to Claude, allowing it to inspect text blocks on-demand.
 
-Register the compiled binary in `~/.claude/config.json`:
+#### Registration
+Add the server to your Claude configuration (e.g., in `~/.claude/config.json`):
 
 ```json
 {
@@ -162,11 +93,56 @@ Register the compiled binary in `~/.claude/config.json`:
       "command": "/absolute/path/to/claude-model-armor/claude-model-armor",
       "args": [],
       "env": {
-        "GOOGLE_CLOUD_PROJECT": "your-project-id"
+        "GOOGLE_CLOUD_PROJECT": "your-gcp-project-id",
+        "MODEL_ARMOR_TEMPLATE": "projects/your-gcp-project-id/locations/us-central1/templates/your-template-id"
       }
     }
   }
 }
 ```
 
+---
 
+## Prerequisites
+
+1.  **GCP Project**: A Google Cloud project with the Model Armor API enabled.
+2.  **Authentication**: Authenticated GCP environment (e.g., via `gcloud auth application-default login`).
+3.  **Go Runtime**: Go 1.23+ is required to build the high-performance binary.
+
+---
+
+## Building from Source
+
+```bash
+# Build the binary
+go build -o claude-model-armor main.go
+
+# Run unit tests
+go test -v ./...
+```
+
+---
+
+## Customizing Local Rules (`rules.yaml`)
+
+Rules are written in Common Expression Language (CEL) and structured with reusable `lists` and `macros`:
+
+```yaml
+lists:
+  - name: sensitive_paths
+    items:
+      - /etc/
+      - /private/etc/
+      - /root/
+
+macros:
+  - name: is_write_tool
+    expression: tool.name in ["Write", "Edit"]
+
+rules:
+  - name: deny_sensitive_paths
+    description: "Prevent modification of system paths"
+    expression: is_write_tool && sensitive_paths.exists(p, tool.real_file_path.startsWith(p))
+    action: deny
+    message: "Security blocked modification of system path: %tool.real_file_path%"
+```
