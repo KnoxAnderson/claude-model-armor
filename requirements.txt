@@ -1,2 +1,5 @@
-mcp
 google-cloud-modelarmor
+datasets
+tabulate
+cel-python
+

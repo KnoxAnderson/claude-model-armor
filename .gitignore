@@ -1,0 +1,6 @@
+venv/
+*.tar.gz
+*.csv
+*benchmark*
+run_benchmark.sh
+run_swebench_eval.py

@@ -1,0 +1,48 @@
+rules:
+  - name: deny_sensitive_paths
+    description: "Prevent reading or writing to sensitive system or credential paths"
+    expression: |
+      tool.name in ["Write", "Edit", "Read"] && (
+        tool.real_file_path.startsWith("/etc/") ||
+        tool.real_file_path.startsWith("/private/etc/") ||
+        tool.real_file_path.startsWith("/root/") ||
+        tool.real_file_path.startsWith("/var/") ||
+        tool.real_file_path.startsWith("/private/var/") ||
+        tool.real_file_path.contains("/.ssh/") ||
+        tool.real_file_path.contains("/.aws/") ||
+        tool.file_name in [".env", ".gitconfig", "id_rsa", "credentials.json", "token.json"]
+      )
+    action: deny
+    message: "Falco CEL blocked access to sensitive path: %tool.real_file_path%"
+
+  - name: ask_outside_cwd
+    description: "Ask for confirmation when reading or writing files outside the session's working directory"
+    expression: |
+      tool.name in ["Write", "Edit", "Read"] &&
+      tool.real_file_path != "" &&
+      !tool.real_file_path.startsWith(agent.real_cwd)
+    action: ask
+    message: "Falco CEL requires confirmation for accessing file outside workspace CWD: %tool.real_file_path%"
+
+  - name: deny_pipe_to_shell
+    description: "Deny piping internet downloads or file contents directly to shell interpreter"
+    expression: |
+      tool.name == "Bash" && (
+        tool.input_command.contains("| sh") ||
+        tool.input_command.contains("| bash") ||
+        tool.input_command.contains("| zsh") ||
+        tool.input_command.contains("curl ") && tool.input_command.contains(" |")
+      )
+    action: deny
+    message: "Falco CEL blocked pipe to shell interpreter in command: %tool.input_command%"
+
+  - name: deny_destructive_commands
+    description: "Deny executing highly destructive commands like rm -rf / or dd to root device"
+    expression: |
+      tool.name == "Bash" && (
+        tool.input_command.contains("rm -rf /") ||
+        tool.input_command.contains("dd if=") ||
+        tool.input_command.contains("chmod -R 777")
+      )
+    action: deny
+    message: "Falco CEL blocked execution of destructive command: %tool.input_command%"
