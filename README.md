@@ -112,3 +112,61 @@ rules:
     message: "Falco CEL blocked access to sensitive path: %tool.real_file_path%"
 ```
 
+## Go Implementation (High-Performance Engine)
+
+The project includes a Go port of the MCP server and PreToolUse hook engine. This implementation uses the official Google Cloud Model Armor Go SDK and `google/cel-go` for high-performance rule evaluations.
+
+### Building the Go Binary
+
+Ensure Go is installed (Go 1.23+ is recommended), then build:
+
+```bash
+go build -o claude-model-armor main.go
+```
+
+### Running with Claude Code
+
+#### As a PreToolUse Hook
+
+Register the compiled binary in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/claude-model-armor/claude-model-armor",
+            "args": [
+              "--hook"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+#### As an MCP Server
+
+Register the compiled binary in `~/.claude/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "model-armor": {
+      "command": "/absolute/path/to/claude-model-armor/claude-model-armor",
+      "args": [],
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "your-project-id"
+      }
+    }
+  }
+}
+```
+
+
