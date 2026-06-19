@@ -54,7 +54,7 @@ Integrates with Google Cloud Model Armor to check the inputs and outputs of comm
 The plugin can be integrated into Claude Code in two ways:
 
 ### A. PreToolUse Hook Mode (Recommended)
-Intercepts tool execution *before* it happens, returning `allow`, `deny`, or `ask` (which prompts the user to confirm).
+Intercepts tool execution *before* it happens, returning `allow`, `deny`, or `ask` (which prompts the user to confirm). Runs both Layer 1 (local CEL rules) and Layer 2 (Model Armor scan of Bash commands and file-write content).
 
 #### Registration
 Add the hook to your Claude Code settings (e.g., in `~/.claude/settings.json`):
@@ -80,7 +80,33 @@ Add the hook to your Claude Code settings (e.g., in `~/.claude/settings.json`):
 }
 ```
 
-### B. MCP Server Mode
+### B. UserPromptSubmit Hook Mode
+Scans each user message through Model Armor *before* it reaches Claude. On a flag it emits a `block` decision (honored by the Claude Code CLI) and also injects an `additionalContext` security alert so clients that do not hard-block on prompt submit (e.g. the desktop app) still warn the model. Register with `--prompt-hook`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "/absolute/path/to/claude-model-armor", "args": ["--prompt-hook"] } ] }
+    ]
+  }
+}
+```
+
+### C. PostToolUse Hook Mode
+Scans the *output* of read-like tools (`Read`, `Bash`, `WebFetch`, `Grep`) after they run — the primary defense against prompt-injection payloads hidden inside files or command output. The content is already in context and cannot be unread, so on a flag the hook injects an `additionalContext` alert instructing the model to treat the output as untrusted data. Register with `--post-hook`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "/absolute/path/to/claude-model-armor", "args": ["--post-hook"] } ] }
+    ]
+  }
+}
+```
+
+### D. MCP Server Mode
 Exposes a `scan_content` tool to Claude, allowing it to inspect text blocks on-demand.
 
 #### Registration
@@ -110,6 +136,16 @@ Add the server to your Claude configuration (e.g., in `~/.claude/config.json`):
 3.  **Go Runtime**: Go 1.23+ is required to build the high-performance binary.
 
 ---
+
+## Configuration (Environment Variables)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GOOGLE_CLOUD_PROJECT` | — | GCP project ID hosting the Model Armor template. |
+| `MODEL_ARMOR_TEMPLATE` | — | Full template resource path. The regional endpoint is derived from the `locations/<region>` segment automatically. |
+| `MODEL_ARMOR_TIMEOUT` | `10` | Per-scan network timeout in seconds. Prevents a slow or unreachable Model Armor service from hanging tool execution. |
+| `MODEL_ARMOR_FAIL_CLOSED` | `false` | When `true`, a Model Armor error or timeout on a PreToolUse scan results in `deny` instead of `allow`. Prompt and post hooks always fail open so the user is never locked out. |
+| `MODEL_ARMOR_AUDIT_LOG` | — | When set to a file path, every decision (local rule, Model Armor, or error) is appended as a JSON line for auditing. |
 
 ## Building from Source
 

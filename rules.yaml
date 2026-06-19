@@ -107,6 +107,12 @@ macros:
   - name: is_claude_data_path
     expression: tool.real_file_path.contains("/.claude/")
 
+  # Identifies the Claude Code settings files that govern hooks and permissions.
+  - name: is_claude_settings_path
+    expression: >
+      tool.real_file_path.endsWith("/.claude/settings.json") ||
+      tool.real_file_path.endsWith("/.claude/settings.local.json")
+
   # Check tool input for known indicators of compromise (IOC) domains.
   - name: contains_ioc_domain
     expression: >

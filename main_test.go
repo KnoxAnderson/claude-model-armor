@@ -1,7 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolvePath(t *testing.T) {
@@ -22,9 +26,15 @@ func TestResolveFilePath(t *testing.T) {
 		t.Error("Empty file path should resolve to empty string")
 	}
 
-	// Test absolute path bypasses CWD
-	if resolveFilePath("/etc/hosts", "/tmp") != "/etc/hosts" {
-		t.Errorf("Absolute path should not prepend CWD, got: %s", resolveFilePath("/etc/hosts", "/tmp"))
+	// Test absolute path bypasses CWD. The path is canonicalized (symlinks
+	// resolved), so on macOS /etc -> /private/etc; assert the CWD is not
+	// prepended rather than an exact platform-specific string.
+	got := resolveFilePath("/etc/hosts", "/tmp")
+	if strings.HasPrefix(got, "/tmp") {
+		t.Errorf("Absolute path should not prepend CWD, got: %s", got)
+	}
+	if !strings.HasSuffix(got, "/etc/hosts") {
+		t.Errorf("Absolute path should resolve to a canonical /etc/hosts, got: %s", got)
 	}
 }
 
@@ -98,4 +108,115 @@ func TestFormatMessage(t *testing.T) {
 	if res != expected {
 		t.Errorf("Expected '%s', got '%s'", expected, res)
 	}
+}
+
+func TestTruncateStr(t *testing.T) {
+	if got := truncateStr("short", 120); got != "short" {
+		t.Errorf("short string should be unchanged, got %q", got)
+	}
+	long := strings.Repeat("a", 200)
+	got := truncateStr(long, 120)
+	if len([]rune(got)) != 121 { // 120 runes + ellipsis
+		t.Errorf("expected 121 runes, got %d", len([]rune(got)))
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Error("truncated string should end with ellipsis")
+	}
+	// Multibyte safety: must not split a rune.
+	multi := strings.Repeat("é", 200)
+	if !strings.HasSuffix(truncateStr(multi, 10), "…") {
+		t.Error("multibyte truncation should still append ellipsis")
+	}
+}
+
+func TestRegionalEndpoint(t *testing.T) {
+	cases := map[string]string{
+		"projects/p/locations/us-central1/templates/t": "modelarmor.us-central1.rep.googleapis.com:443",
+		"projects/p/locations/us/templates/t":          "modelarmor.us.rep.googleapis.com:443",
+		"garbage":                                       "modelarmor.googleapis.com:443",
+		"":                                              "modelarmor.googleapis.com:443",
+	}
+	for in, want := range cases {
+		if got := regionalEndpoint(in); got != want {
+			t.Errorf("regionalEndpoint(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExtractToolOutput(t *testing.T) {
+	// String response (Read) is unquoted.
+	p := PostToolUseInput{ToolName: "Read", ToolResponse: json.RawMessage(`"hello world"`)}
+	if got := extractToolOutput(p); got != "hello world" {
+		t.Errorf("expected unquoted string, got %q", got)
+	}
+
+	// Object response (Bash) is serialized.
+	p = PostToolUseInput{ToolName: "Bash", ToolResponse: json.RawMessage(`{"stdout":"x"}`)}
+	if got := extractToolOutput(p); !strings.Contains(got, "stdout") {
+		t.Errorf("expected serialized object, got %q", got)
+	}
+
+	// Non-scanned tool returns empty.
+	p = PostToolUseInput{ToolName: "Write", ToolResponse: json.RawMessage(`"content"`)}
+	if got := extractToolOutput(p); got != "" {
+		t.Errorf("Write output should not be scanned, got %q", got)
+	}
+
+	// Oversized output is truncated.
+	big, _ := json.Marshal(strings.Repeat("a", maxScanBytes+5000))
+	p = PostToolUseInput{ToolName: "Read", ToolResponse: big}
+	if got := extractToolOutput(p); len(got) > maxScanBytes {
+		t.Errorf("output should be truncated to %d, got %d", maxScanBytes, len(got))
+	}
+}
+
+func TestLoadRuntimeConfig(t *testing.T) {
+	// Defaults.
+	os.Unsetenv("MODEL_ARMOR_TIMEOUT")
+	os.Unsetenv("MODEL_ARMOR_FAIL_CLOSED")
+	os.Unsetenv("MODEL_ARMOR_AUDIT_LOG")
+	cfg := loadRuntimeConfig()
+	if cfg.scanTimeout != 10*time.Second {
+		t.Errorf("default timeout should be 10s, got %v", cfg.scanTimeout)
+	}
+	if cfg.failClosed {
+		t.Error("default should be fail-open")
+	}
+
+	// Overrides.
+	os.Setenv("MODEL_ARMOR_TIMEOUT", "3")
+	os.Setenv("MODEL_ARMOR_FAIL_CLOSED", "true")
+	defer os.Unsetenv("MODEL_ARMOR_TIMEOUT")
+	defer os.Unsetenv("MODEL_ARMOR_FAIL_CLOSED")
+	cfg = loadRuntimeConfig()
+	if cfg.scanTimeout != 3*time.Second {
+		t.Errorf("timeout override failed, got %v", cfg.scanTimeout)
+	}
+	if !cfg.failClosed {
+		t.Error("fail-closed override failed")
+	}
+}
+
+func TestWriteAudit(t *testing.T) {
+	tmp, err := os.CreateTemp("", "audit-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	tmp.Close()
+
+	cfg := runtimeConfig{auditPath: tmp.Name()}
+	cfg.writeAudit(auditEntry{Event: "PreToolUse", Tool: "Bash", Decision: "deny", Source: "local_rule"})
+
+	data, _ := os.ReadFile(tmp.Name())
+	var e auditEntry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &e); err != nil {
+		t.Fatalf("audit line not valid JSON: %v", err)
+	}
+	if e.Decision != "deny" || e.Timestamp == "" {
+		t.Errorf("audit entry missing fields: %+v", e)
+	}
+
+	// No path configured = no-op (no panic).
+	runtimeConfig{}.writeAudit(auditEntry{Decision: "allow"})
 }
