@@ -40,6 +40,11 @@ type runtimeConfig struct {
 	// auditPath, when set, receives a JSON line per decision. Override with
 	// MODEL_ARMOR_AUDIT_LOG=/path/to/log.
 	auditPath string
+	// rulesAskOnly downgrades every local-rule "deny" to "ask", so Layer 1
+	// never hard-blocks; the user is prompted to confirm instead. Override
+	// with MODEL_ARMOR_RULES_ASK_ONLY=true. Model Armor cloud findings are
+	// unaffected.
+	rulesAskOnly bool
 }
 
 // loadRuntimeConfig reads behavior knobs from the environment.
@@ -56,6 +61,9 @@ func loadRuntimeConfig() runtimeConfig {
 	}
 	if v := os.Getenv("MODEL_ARMOR_FAIL_CLOSED"); v == "true" || v == "1" {
 		cfg.failClosed = true
+	}
+	if v := os.Getenv("MODEL_ARMOR_RULES_ASK_ONLY"); v == "true" || v == "1" {
+		cfg.rulesAskOnly = true
 	}
 	return cfg
 }
@@ -165,6 +173,27 @@ var postScanTools = map[string]bool{
 	"Grep":     true,
 }
 
+// StopHookInput is the payload delivered to a Stop hook when Claude finishes a
+// response. stop_hook_active is true when this Stop fired as a result of a prior
+// Stop-hook block, used to break potential regenerate loops.
+type StopHookInput struct {
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	CWD            string `json:"cwd"`
+	HookEventName  string `json:"hook_event_name"`
+	StopHookActive bool   `json:"stop_hook_active"`
+}
+
+// transcriptLine is one JSONL entry in a Claude Code transcript. Only the fields
+// needed to recover the latest assistant text are decoded.
+type transcriptLine struct {
+	Type    string `json:"type"`
+	Message struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
 type HookResponse struct {
 	HookSpecificOutput HookSpecificOutput `json:"hookSpecificOutput"`
 }
@@ -255,6 +284,64 @@ func extractToolOutput(p PostToolUseInput) string {
 		text = text[:maxScanBytes]
 	}
 	return text
+}
+
+// extractContentText pulls concatenated text out of a transcript message's
+// content, which is either a bare string or an array of typed blocks. Only
+// text blocks are included; tool_use/tool_result blocks are ignored.
+func extractContentText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	// Bare string content.
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return s
+	}
+	// Array of content blocks.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// lastAssistantText returns the text of the most recent assistant message in a
+// transcript JSONL file, scanning from the end. Returns "" if none is found.
+func lastAssistantText(transcriptPath string) string {
+	if transcriptPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var entry transcriptLine
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Type == "assistant" || entry.Message.Role == "assistant" {
+			if text := extractContentText(entry.Message.Content); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 // expandExpression replaces macro calls inside a CEL expression recursively
@@ -349,48 +436,75 @@ func newModelArmorClient(ctx context.Context, templateName string) (*modelarmor.
 	return modelarmor.NewClient(ctx, option.WithEndpoint(endpoint))
 }
 
-// scanTextWithModelArmor sends content to Google Cloud Model Armor for scanning
+// scanDirection selects which Model Armor sanitization endpoint is used, matching
+// how Vertex-integrated Model Armor treats each leg of the data flow.
+type scanDirection int
+
+const (
+	// dirInbound scans content flowing INTO the model (user prompts, tool
+	// results) via SanitizeUserPrompt — tuned for prompt injection/jailbreak.
+	dirInbound scanDirection = iota
+	// dirOutbound scans content flowing OUT of the model (assistant responses,
+	// model-generated tool calls) via SanitizeModelResponse — tuned for RAI,
+	// PII leakage, and malicious URLs the model emits.
+	dirOutbound
+)
+
+// summarizeFindings turns a sanitization result into a human-readable finding
+// string, or "" when nothing matched.
+func summarizeFindings(result *modelarmorpb.SanitizationResult) string {
+	if result == nil || result.FilterMatchState != modelarmorpb.FilterMatchState_MATCH_FOUND {
+		return ""
+	}
+	var findings []string
+	for name, filterRes := range result.FilterResults {
+		if isFilterMatch(filterRes) {
+			findings = append(findings, name)
+		}
+	}
+	if len(findings) == 0 {
+		return ""
+	}
+	return "Model Armor flagged: " + strings.Join(findings, ", ")
+}
+
+// scanTextWithModelArmor sends inbound content (user-prompt direction) to Model
+// Armor. Retained for the MCP scan_content tool and inbound hook paths.
 func scanTextWithModelArmor(ctx context.Context, client *modelarmor.Client, templateName string, text string) (string, error) {
 	if text == "" {
 		return "", nil
 	}
-	req := &modelarmorpb.SanitizeUserPromptRequest{
-		Name: templateName,
-		UserPromptData: &modelarmorpb.DataItem{
-			DataItem: &modelarmorpb.DataItem_Text{
-				Text: text,
-			},
-		},
-	}
-	resp, err := client.SanitizeUserPrompt(ctx, req)
+	resp, err := client.SanitizeUserPrompt(ctx, &modelarmorpb.SanitizeUserPromptRequest{
+		Name:           templateName,
+		UserPromptData: &modelarmorpb.DataItem{DataItem: &modelarmorpb.DataItem_Text{Text: text}},
+	})
 	if err != nil {
 		return "", err
 	}
+	return summarizeFindings(resp.GetSanitizationResult()), nil
+}
 
-	result := resp.GetSanitizationResult()
-	if result == nil {
+// scanModelResponseWithModelArmor sends outbound content (model-response
+// direction) to Model Armor.
+func scanModelResponseWithModelArmor(ctx context.Context, client *modelarmor.Client, templateName string, text string) (string, error) {
+	if text == "" {
 		return "", nil
 	}
-
-	if result.FilterMatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
-		var findings []string
-		for name, filterRes := range result.FilterResults {
-			if isFilterMatch(filterRes) {
-				findings = append(findings, name)
-			}
-		}
-		if len(findings) > 0 {
-			return "Model Armor flagged: " + strings.Join(findings, ", "), nil
-		}
+	resp, err := client.SanitizeModelResponse(ctx, &modelarmorpb.SanitizeModelResponseRequest{
+		Name:              templateName,
+		ModelResponseData: &modelarmorpb.DataItem{DataItem: &modelarmorpb.DataItem_Text{Text: text}},
+	})
+	if err != nil {
+		return "", err
 	}
-	return "", nil
+	return summarizeFindings(resp.GetSanitizationResult()), nil
 }
 
 // scanWithTimeout creates a regional client, applies the configured timeout, and
-// scans text in one call. It centralizes client lifecycle and deadline handling
-// so every hook mode behaves consistently. An empty templateName or text is a
-// no-op (returns "", nil).
-func scanWithTimeout(parent context.Context, cfg runtimeConfig, templateName, text string) (string, error) {
+// scans text in the requested direction. It centralizes client lifecycle and
+// deadline handling so every hook mode behaves consistently. An empty
+// templateName or text is a no-op (returns "", nil).
+func scanWithTimeout(parent context.Context, cfg runtimeConfig, templateName, text string, dir scanDirection) (string, error) {
 	if templateName == "" || text == "" {
 		return "", nil
 	}
@@ -403,6 +517,9 @@ func scanWithTimeout(parent context.Context, cfg runtimeConfig, templateName, te
 	}
 	defer client.Close()
 
+	if dir == dirOutbound {
+		return scanModelResponseWithModelArmor(ctx, client, templateName, text)
+	}
 	return scanTextWithModelArmor(ctx, client, templateName, text)
 }
 
@@ -410,6 +527,7 @@ func main() {
 	hookMode := flag.Bool("hook", false, "Run in PreToolUse hook mode")
 	promptHookMode := flag.Bool("prompt-hook", false, "Run in UserPromptSubmit hook mode")
 	postHookMode := flag.Bool("post-hook", false, "Run in PostToolUse hook mode (scans tool output for injection)")
+	responseHookMode := flag.Bool("response-hook", false, "Run in Stop hook mode (scans the assistant's response; Vertex Simulation)")
 	templateFlag := flag.String("template", "", "Google Cloud Model Armor template resource path")
 	rulesFlag := flag.String("rules", "", "Path to local rules.yaml definition")
 	flag.Parse()
@@ -445,6 +563,12 @@ func main() {
 		return
 	}
 
+	// 2b. Stop hook path (Vertex Simulation: scan assistant responses)
+	if *responseHookMode {
+		runResponseHook(templateName, cfg)
+		return
+	}
+
 	// 3. PreToolUse hook path
 	if *hookMode {
 		runHook(templateName, rulesPath, cfg)
@@ -474,7 +598,7 @@ func runPromptHook(templateName string, cfg runtimeConfig) {
 		os.Exit(0)
 	}
 
-	finding, err := scanWithTimeout(ctx, cfg, templateName, payload.Prompt)
+	finding, err := scanWithTimeout(ctx, cfg, templateName, payload.Prompt, dirInbound)
 	if err != nil {
 		logger.Printf("Error scanning user prompt: %v", err)
 		cfg.writeAudit(auditEntry{Event: "UserPromptSubmit", Decision: "allow", Reason: err.Error(), Source: "error"})
@@ -527,7 +651,8 @@ func runPostHook(templateName string, cfg runtimeConfig) {
 		os.Exit(0)
 	}
 
-	finding, err := scanWithTimeout(ctx, cfg, templateName, scanText)
+	// Tool output becomes input to the model's next turn → inbound direction.
+	finding, err := scanWithTimeout(ctx, cfg, templateName, scanText, dirInbound)
 	if err != nil {
 		logger.Printf("Error scanning tool output: %v", err)
 		cfg.writeAudit(auditEntry{Event: "PostToolUse", Tool: payload.ToolName, Decision: "allow", Reason: err.Error(), Source: "error"})
@@ -547,6 +672,63 @@ func runPostHook(templateName string, cfg runtimeConfig) {
 	}
 
 	cfg.writeAudit(auditEntry{Event: "PostToolUse", Tool: payload.ToolName, Decision: "allow", Source: "model_armor"})
+	os.Exit(0)
+}
+
+// runResponseHook implements the outbound leg of Vertex Simulation: when Claude
+// finishes a turn, it scans the assistant's text through Model Armor's
+// model-response API (RAI, PII leakage, malicious URLs the model emitted). On a
+// flag it blocks the Stop so the model must revise its response — mirroring how
+// Vertex-integrated Model Armor would reject an unsafe model response. It refuses
+// to block twice in a row (stop_hook_active) to avoid a regenerate loop.
+func runResponseHook(templateName string, cfg runtimeConfig) {
+	ctx := context.Background()
+
+	inputBytes, err := io.ReadAll(os.Stdin)
+	if err != nil || len(inputBytes) == 0 {
+		os.Exit(0)
+	}
+
+	var payload StopHookInput
+	if err := json.Unmarshal(inputBytes, &payload); err != nil {
+		logger.Printf("Failed to parse stop-hook input: %v", err)
+		os.Exit(0)
+	}
+
+	if templateName == "" {
+		os.Exit(0)
+	}
+
+	text := lastAssistantText(payload.TranscriptPath)
+	if text == "" {
+		os.Exit(0)
+	}
+
+	// Assistant text is model output → outbound (model-response) direction.
+	finding, err := scanWithTimeout(ctx, cfg, templateName, text, dirOutbound)
+	if err != nil {
+		logger.Printf("Error scanning model response: %v", err)
+		cfg.writeAudit(auditEntry{Event: "Stop", Decision: "allow", Reason: err.Error(), Source: "error"})
+		os.Exit(0)
+	}
+
+	if finding == "" {
+		cfg.writeAudit(auditEntry{Event: "Stop", Decision: "allow", Source: "model_armor"})
+		os.Exit(0)
+	}
+
+	// Already re-prompted once; allow the stop to avoid an infinite loop.
+	if payload.StopHookActive {
+		cfg.writeAudit(auditEntry{Event: "Stop", Decision: "allow", Reason: "loop guard after: " + finding, Source: "model_armor"})
+		os.Exit(0)
+	}
+
+	cfg.writeAudit(auditEntry{Event: "Stop", Decision: "block", Reason: finding, Source: "model_armor"})
+	resp := map[string]interface{}{
+		"decision": "block",
+		"reason":   "[MODEL ARMOR] Your previous response was flagged by Google Cloud Model Armor (" + finding + "). Revise it to remove the flagged content and respond again in compliance with safety policy.",
+	}
+	json.NewEncoder(os.Stdout).Encode(resp)
 	os.Exit(0)
 }
 
@@ -679,11 +861,17 @@ func runHook(templateName string, rulesPath string, cfg runtimeConfig) {
 
 		if matched, ok := out.Value().(bool); ok && matched {
 			ruleReason := formatMessage(rule.Message, celContextMap)
-			if rule.Action == "deny" {
+			action := rule.Action
+			// In ask-only mode, a denying rule prompts the user instead of
+			// hard-blocking. Layer 1 becomes advisory rather than enforcing.
+			if action == "deny" && cfg.rulesAskOnly {
+				action = "ask"
+			}
+			if action == "deny" {
 				decision = "deny"
 				reason = ruleReason
 				break // Deny immediately overrides other matches
-			} else if rule.Action == "ask" {
+			} else if action == "ask" {
 				if decision != "deny" {
 					decision = "ask"
 					reason = ruleReason
@@ -709,7 +897,7 @@ func runHook(templateName string, rulesPath string, cfg runtimeConfig) {
 		}
 
 		if scanText != "" {
-			finding, err := scanWithTimeout(ctx, cfg, templateName, scanText)
+			finding, err := scanWithTimeout(ctx, cfg, templateName, scanText, dirInbound)
 			if err != nil {
 				logger.Printf("Error calling Model Armor: %v", err)
 				if cfg.failClosed {

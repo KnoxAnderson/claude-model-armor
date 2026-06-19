@@ -197,6 +197,56 @@ func TestLoadRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestExtractContentText(t *testing.T) {
+	// Bare string.
+	if got := extractContentText(json.RawMessage(`"hello"`)); got != "hello" {
+		t.Errorf("string content: got %q", got)
+	}
+	// Array of blocks: only text blocks, joined.
+	blocks := json.RawMessage(`[{"type":"text","text":"a"},{"type":"tool_use","name":"Bash"},{"type":"text","text":"b"}]`)
+	if got := extractContentText(blocks); got != "a\nb" {
+		t.Errorf("block content: got %q", got)
+	}
+	// Empty.
+	if got := extractContentText(json.RawMessage(``)); got != "" {
+		t.Errorf("empty content should be empty, got %q", got)
+	}
+}
+
+func TestLastAssistantText(t *testing.T) {
+	tmp, err := os.CreateTemp("", "transcript-*.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmp.Name())
+	tmp.WriteString(`{"type":"user","message":{"role":"user","content":"hi"}}` + "\n")
+	tmp.WriteString(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}` + "\n")
+	tmp.WriteString(`{"type":"user","message":{"role":"user","content":"again"}}` + "\n")
+	tmp.WriteString(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"latest answer"}]}}` + "\n")
+	tmp.Close()
+
+	if got := lastAssistantText(tmp.Name()); got != "latest answer" {
+		t.Errorf("expected most recent assistant text, got %q", got)
+	}
+
+	// Missing file is a safe no-op.
+	if got := lastAssistantText("/nonexistent/path.jsonl"); got != "" {
+		t.Errorf("missing transcript should yield empty, got %q", got)
+	}
+}
+
+func TestRulesAskOnlyConfig(t *testing.T) {
+	os.Setenv("MODEL_ARMOR_RULES_ASK_ONLY", "true")
+	defer os.Unsetenv("MODEL_ARMOR_RULES_ASK_ONLY")
+	if !loadRuntimeConfig().rulesAskOnly {
+		t.Error("MODEL_ARMOR_RULES_ASK_ONLY=true should set rulesAskOnly")
+	}
+	os.Unsetenv("MODEL_ARMOR_RULES_ASK_ONLY")
+	if loadRuntimeConfig().rulesAskOnly {
+		t.Error("rulesAskOnly should default false")
+	}
+}
+
 func TestWriteAudit(t *testing.T) {
 	tmp, err := os.CreateTemp("", "audit-*.log")
 	if err != nil {

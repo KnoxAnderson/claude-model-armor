@@ -49,9 +49,22 @@ Integrates with Google Cloud Model Armor to check the inputs and outputs of comm
 
 ---
 
+## Operating Modes
+
+The plugin ships two ready-to-use coverage profiles, assembled from the hook modes below:
+
+| Path through the system | Hook | Standard | Vertex Simulation |
+|-------------------------|------|:--------:|:-----------------:|
+| User message → model | UserPromptSubmit (`--prompt-hook`) | ✅ | ✅ |
+| Model → tool call request (+ local rules) | PreToolUse (`--hook`) | ✅ | ✅ |
+| Tool result → model | PostToolUse (`--post-hook`) | ✅ | ✅ |
+| Model → user response | Stop (`--response-hook`) | — | ✅ |
+
+**Standard** scans the agent's inputs and actions. **Vertex Simulation** adds the outbound model-response scan (`SanitizeModelResponse`), so every leg that would cross a Vertex API boundary is covered in both directions — approximating what Model Armor sees when integrated natively into Vertex AI.
+
 ## Deployment Modes
 
-The plugin can be integrated into Claude Code in two ways:
+The plugin can be integrated into Claude Code via the following hook modes (and as an MCP server):
 
 ### A. PreToolUse Hook Mode (Recommended)
 Intercepts tool execution *before* it happens, returning `allow`, `deny`, or `ask` (which prompts the user to confirm). Runs both Layer 1 (local CEL rules) and Layer 2 (Model Armor scan of Bash commands and file-write content).
@@ -106,7 +119,20 @@ Scans the *output* of read-like tools (`Read`, `Bash`, `WebFetch`, `Grep`) after
 }
 ```
 
-### D. MCP Server Mode
+### D. Stop Hook Mode (Vertex Simulation)
+Scans the *assistant's own response* after each turn through Model Armor's model-response API (`SanitizeModelResponse` — RAI, PII leakage, and malicious URLs the model emitted). On a flag it blocks the Stop, forcing the model to revise — mirroring how Vertex-integrated Model Armor rejects an unsafe model response. A loop guard (`stop_hook_active`) prevents endless regeneration. Register with `--response-hook`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "/absolute/path/to/claude-model-armor", "args": ["--response-hook"] } ] }
+    ]
+  }
+}
+```
+
+### E. MCP Server Mode
 Exposes a `scan_content` tool to Claude, allowing it to inspect text blocks on-demand.
 
 #### Registration
@@ -145,6 +171,7 @@ Add the server to your Claude configuration (e.g., in `~/.claude/config.json`):
 | `MODEL_ARMOR_TEMPLATE` | — | Full template resource path. The regional endpoint is derived from the `locations/<region>` segment automatically. |
 | `MODEL_ARMOR_TIMEOUT` | `10` | Per-scan network timeout in seconds. Prevents a slow or unreachable Model Armor service from hanging tool execution. |
 | `MODEL_ARMOR_FAIL_CLOSED` | `false` | When `true`, a Model Armor error or timeout on a PreToolUse scan results in `deny` instead of `allow`. Prompt and post hooks always fail open so the user is never locked out. |
+| `MODEL_ARMOR_RULES_ASK_ONLY` | `false` | When `true`, every Layer 1 (local rule) `deny` is downgraded to `ask`, so Layer 1 prompts for confirmation instead of hard-blocking. Model Armor cloud findings are unaffected. |
 | `MODEL_ARMOR_AUDIT_LOG` | — | When set to a file path, every decision (local rule, Model Armor, or error) is appended as a JSON line for auditing. |
 
 ## Building from Source
