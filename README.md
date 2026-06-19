@@ -146,3 +146,56 @@ rules:
     action: deny
     message: "Security blocked modification of system path: %tool.real_file_path%"
 ```
+
+---
+
+## Enterprise Orchestration & Deployment
+
+For security teams looking to deploy and enforce `claude-model-armor` across all developer machines within a company, follow this orchestration guide:
+
+### 1. Centralized Binary & Rules Distribution
+Use an endpoint management platform or configuration manager (such as Jamf Pro, Microsoft Intune, Ansible, or Chef) to distribute the following assets to developer workstations:
+*   **Production Binary**: Install `claude-model-armor` to a read-only system executable directory (e.g., `/usr/local/bin/claude-model-armor`).
+*   **Local Rules file**: Deploy the company-approved `rules.yaml` to a centralized configuration directory (e.g., `/etc/claude-model-armor/rules.yaml`). Ensure this file is owned by root/system and read-only to prevent users from modifying or tampering with the rules locally.
+
+### 2. Global Hook Configuration
+Automate the injection of the `PreToolUse` hook configuration into each developer's `~/.claude/settings.json`. The following configuration enforces the security check and points to the read-only rules file using the `--rules` flag:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/claude-model-armor",
+            "args": [
+              "--hook",
+              "--rules",
+              "/etc/claude-model-armor/rules.yaml"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This can be pushed automatically via a logon/startup shell script or by orchestrating changes to the settings file using `jq`.
+
+### 3. Environment Variable Enforcement
+Model Armor requires the Google Cloud client environment variables for cognitive safety screening. Push the following environment variables globally (e.g., via `/etc/profile.d/model_armor.sh` on macOS/Linux, or registry key group policies on Windows):
+*   `GOOGLE_CLOUD_PROJECT`: The ID of your centralized Google Cloud project.
+*   `MODEL_ARMOR_TEMPLATE`: The resource path to your Model Armor safety template: `projects/<project-id>/locations/<region>/templates/<template-id>`
+
+Ensure that developers are authenticated with the GCP project (e.g., via a shared service account key or dynamic credential exchange via `gcloud auth application-default login`).
+
+### 4. Policy Limits Hardening (Tamper Prevention)
+To prevent developers from disabling or unstaging the security hook configuration, deploy a read-only **Policy Limits** file to:
+*   `~/.claude/policy-limits.json`
+
+Ensure the limits file has permission rules restricting the modification of Claude's environment or bypassing approvals. The local rules engine itself also blocks attempts to write to settings or policy limits via the `Deny writes to Claude Code settings file` and `Deny writes to Claude Code policy limits file` rules.
+

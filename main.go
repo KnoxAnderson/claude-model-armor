@@ -246,6 +246,7 @@ func scanTextWithModelArmor(ctx context.Context, client *modelarmor.Client, temp
 func main() {
 	hookMode := flag.Bool("hook", false, "Run in PreToolUse hook mode")
 	templateFlag := flag.String("template", "", "Google Cloud Model Armor template resource path")
+	rulesFlag := flag.String("rules", "", "Path to local rules.yaml definition")
 	flag.Parse()
 
 	// Load template from environment if flag is empty
@@ -254,9 +255,20 @@ func main() {
 		templateName = os.Getenv("MODEL_ARMOR_TEMPLATE")
 	}
 
+	// Resolve rules.yaml path
+	rulesPath := *rulesFlag
+	if rulesPath == "" {
+		executablePath, err := os.Executable()
+		if err == nil {
+			rulesPath = filepath.Join(filepath.Dir(executablePath), "rules.yaml")
+		} else {
+			rulesPath = "rules.yaml"
+		}
+	}
+
 	// 1. Hook execution path
 	if *hookMode {
-		runHook(templateName)
+		runHook(templateName, rulesPath)
 		return
 	}
 
@@ -264,7 +276,7 @@ func main() {
 	runMcpServer(templateName)
 }
 
-func runHook(templateName string) {
+func runHook(templateName string, rulesPath string) {
 	ctx := context.Background()
 
 	// Fail safe/closed helper on exit/errors
@@ -326,15 +338,6 @@ func runHook(templateName string) {
 			"real_file_path": realFilePath,
 			"file_name":      fileName,
 		},
-	}
-
-	// Load rules from rules.yaml
-	executablePath, err := os.Executable()
-	var rulesPath string
-	if err == nil {
-		rulesPath = filepath.Join(filepath.Dir(executablePath), "rules.yaml")
-	} else {
-		rulesPath = "rules.yaml"
 	}
 
 	var rulesConfig RulesConfig
