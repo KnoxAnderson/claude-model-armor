@@ -161,7 +161,17 @@ func expandExpression(expr string, macros map[string]string) string {
 	return current
 }
 
-// formatMessage replaces placeholders in message template using context fields
+// truncateStr shortens s to max runes, appending "…" if truncated.
+func truncateStr(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
+// formatMessage replaces placeholders in message template using context fields.
+// Values longer than 120 chars are truncated to keep Claude Code output readable.
 func formatMessage(msgTmpl string, context map[string]interface{}) string {
 	res := msgTmpl
 	re := regexp.MustCompile(`%([a-zA-Z0-9._]+)%`)
@@ -178,7 +188,7 @@ func formatMessage(msgTmpl string, context map[string]interface{}) string {
 				break
 			}
 		}
-		res = strings.ReplaceAll(res, "%"+path+"%", fmt.Sprintf("%v", val))
+		res = strings.ReplaceAll(res, "%"+path+"%", truncateStr(fmt.Sprintf("%v", val), 120))
 	}
 	return res
 }
@@ -415,12 +425,12 @@ func runHook(templateName string, rulesPath string) {
 			ruleReason := formatMessage(rule.Message, celContextMap)
 			if rule.Action == "deny" {
 				decision = "deny"
-				reason = fmt.Sprintf("Rule '%s': %s", rule.Name, ruleReason)
+				reason = ruleReason
 				break // Deny immediately overrides other matches
 			} else if rule.Action == "ask" {
 				if decision != "deny" {
 					decision = "ask"
-					reason = fmt.Sprintf("Rule '%s': %s", rule.Name, ruleReason)
+					reason = ruleReason
 				}
 			}
 		}
