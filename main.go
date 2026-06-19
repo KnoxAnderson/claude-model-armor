@@ -62,6 +62,14 @@ type HookAgentContext struct {
 	CWD            string `json:"cwd"`
 }
 
+type PromptHookInput struct {
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	CWD            string `json:"cwd"`
+	HookEventName  string `json:"hook_event_name"`
+	Prompt         string `json:"prompt"`
+}
+
 type HookToolUse struct {
 	UseID       string                 `json:"tool_use_id"`
 	Name        string                 `json:"tool_name"`
@@ -272,6 +280,7 @@ func scanTextWithModelArmor(ctx context.Context, client *modelarmor.Client, temp
 
 func main() {
 	hookMode := flag.Bool("hook", false, "Run in PreToolUse hook mode")
+	promptHookMode := flag.Bool("prompt-hook", false, "Run in UserPromptSubmit hook mode")
 	templateFlag := flag.String("template", "", "Google Cloud Model Armor template resource path")
 	rulesFlag := flag.String("rules", "", "Path to local rules.yaml definition")
 	flag.Parse()
@@ -293,14 +302,66 @@ func main() {
 		}
 	}
 
-	// 1. Hook execution path
+	// 1. UserPromptSubmit hook path
+	if *promptHookMode {
+		runPromptHook(templateName)
+		return
+	}
+
+	// 2. PreToolUse hook path
 	if *hookMode {
 		runHook(templateName, rulesPath)
 		return
 	}
 
-	// 2. MCP Server execution path
+	// 3. MCP Server execution path
 	runMcpServer(templateName)
+}
+
+func runPromptHook(templateName string) {
+	ctx := context.Background()
+
+	inputBytes, err := io.ReadAll(os.Stdin)
+	if err != nil || len(inputBytes) == 0 {
+		logger.Printf("Empty stdin or read error: %v", err)
+		os.Exit(2)
+	}
+
+	var payload PromptHookInput
+	if err := json.Unmarshal(inputBytes, &payload); err != nil {
+		logger.Printf("Failed to parse prompt hook input: %v", err)
+		os.Exit(2)
+	}
+
+	if payload.Prompt == "" || templateName == "" {
+		os.Exit(0)
+	}
+
+	client, err := newModelArmorClient(ctx, templateName)
+	if err != nil {
+		logger.Printf("Warning: Failed to create Model Armor client: %v", err)
+		os.Exit(0)
+	}
+	defer client.Close()
+
+	finding, err := scanTextWithModelArmor(ctx, client, templateName, payload.Prompt)
+	if err != nil {
+		logger.Printf("Error scanning user prompt: %v", err)
+		os.Exit(0)
+	}
+
+	if finding != "" {
+		resp := HookResponse{
+			HookSpecificOutput: HookSpecificOutput{
+				HookEventName:            "UserPromptSubmit",
+				PermissionDecision:       "deny",
+				PermissionDecisionReason: "Model Armor blocked your message: " + finding,
+			},
+		}
+		json.NewEncoder(os.Stdout).Encode(resp)
+	}
+
+	os.Exit(0)
 }
 
 func runHook(templateName string, rulesPath string) {
