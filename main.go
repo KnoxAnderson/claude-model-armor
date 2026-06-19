@@ -351,12 +351,9 @@ func runPromptHook(templateName string) {
 	}
 
 	if finding != "" {
-		resp := HookResponse{
-			HookSpecificOutput: HookSpecificOutput{
-				HookEventName:            "UserPromptSubmit",
-				PermissionDecision:       "deny",
-				PermissionDecisionReason: "Model Armor blocked your message: " + finding,
-			},
+		resp := map[string]string{
+			"decision": "block",
+			"reason":   "Model Armor blocked your message: " + finding,
 		}
 		json.NewEncoder(os.Stdout).Encode(resp)
 	}
