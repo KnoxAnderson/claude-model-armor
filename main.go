@@ -19,6 +19,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"google.golang.org/api/option"
 	"gopkg.in/yaml.v3"
 )
 
@@ -204,6 +205,22 @@ func isFilterMatch(res *modelarmorpb.FilterResult) bool {
 		return f.VirusScanFilterResult.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND
 	}
 	return false
+}
+
+// regionalEndpoint derives the Model Armor regional endpoint from a template resource path.
+// Template paths have the form: projects/<proj>/locations/<loc>/templates/<name>
+func regionalEndpoint(templateName string) string {
+	parts := strings.Split(templateName, "/")
+	if len(parts) >= 4 && parts[2] == "locations" {
+		return fmt.Sprintf("modelarmor.%s.rep.googleapis.com:443", parts[3])
+	}
+	return "modelarmor.googleapis.com:443"
+}
+
+// newModelArmorClient creates a client pointed at the correct regional endpoint.
+func newModelArmorClient(ctx context.Context, templateName string) (*modelarmor.Client, error) {
+	endpoint := regionalEndpoint(templateName)
+	return modelarmor.NewClient(ctx, option.WithEndpoint(endpoint))
 }
 
 // scanTextWithModelArmor sends content to Google Cloud Model Armor for scanning
@@ -411,7 +428,7 @@ func runHook(templateName string, rulesPath string) {
 
 	// Model Armor verification if allowed by rules
 	if decision == "allow" && templateName != "" {
-		client, err := modelarmor.NewClient(ctx)
+		client, err := newModelArmorClient(ctx, templateName)
 		if err != nil {
 			logger.Printf("Warning: Failed to create Model Armor client: %v", err)
 		} else {
@@ -467,7 +484,7 @@ func runMcpServer(templateName string) {
 			return mcp.NewToolResultText("Warning: Model Armor template not configured. Content check skipped."), nil
 		}
 
-		client, err := modelarmor.NewClient(ctx)
+		client, err := newModelArmorClient(ctx, templateName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Model Armor client: %w", err)
 		}
