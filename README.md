@@ -1,38 +1,40 @@
 # Claude Model Armor Guardrails
 
-A high-performance, dual-layer security guardrail system for Claude Code, written in Go for maximum execution speed and minimal latency overhead. It operates as both a deterministic local policy engine and a cloud-based content safety filter.
+A high-performance, dual-layer security guardrail system for Claude Code, written in Go for maximum execution speed and minimal latency overhead. It combines **Agent Behavioral Detections** (a deterministic local policy engine) with **Agent Context Scanning** (a cloud-based content safety filter).
 
 ## Dual-Layer Security Architecture
 
-This plugin protects your environment using two complementary security layers:
+This plugin protects your environment using two complementary security layers — **Agent Behavioral Detections** (local) and **Agent Context Scanning** (cloud):
 
 ```
 [Claude Code Tool Call]
           │
           ▼
 ┌──────────────────────────────────────────────┐
-│  Layer 1: Deterministic CEL Rules (Local)   │
+│  Agent Behavioral Detections (Local CEL)    │
 │  - Blocks sensitive path access (/etc, .ssh) │
 │  - Prevents sandbox-disable configurations   │
 │  - Intercepts destructive shell commands    │
 │  - Restricts operations outside CWD          │
+│  (PreToolUse only)                           │
 └──────────────────────┬───────────────────────┘
                        │ (if allowed)
                        ▼
 ┌──────────────────────────────────────────────┐
-│   Layer 2: Cloud Model Armor (GCP Service)   │
-│  - Screens command/file text via APIs        │
+│  Agent Context Scanning (GCP Model Armor)   │
+│  - Screens command/file/prompt text via APIs │
 │  - Detects Prompt Injection & Jailbreaks     │
 │  - Scans for PII / Sensitive Data (SDP)      │
 │  - Blocks Malicious URIs & RAI violations    │
+│  (all hooks, inbound + outbound)             │
 └──────────────────────┬───────────────────────┘
                        │ (if allowed)
                        ▼
              [Execute Tool Call]
 ```
 
-### 1. Deterministic Local Rules (CEL Engine)
-Powered by `google/cel-go`, this layer evaluates coding agent tool calls (Read, Write, Edit, Bash) against a structured local rule set before execution. 
+### 1. Agent Behavioral Detections (CEL Engine)
+Powered by `google/cel-go`, this layer evaluates coding agent tool calls (Read, Write, Edit, Bash) against a structured local rule set before execution. It runs **only on the PreToolUse hook**, where there is an action to gate.
 
 By default, it includes **60+ rules** designed for local system safety and agent containment:
 *   **Path Protection**: Prevents reads or writes to system files (`/etc`, `/var`, `/boot`), GPG, SSH keys, AWS/GCP cloud credentials, and browser databases.
@@ -40,8 +42,8 @@ By default, it includes **60+ rules** designed for local system safety and agent
 *   **Destructive Shell Commands**: Denies highly destructive shell pipelines (e.g., `sudo su`, `mkfs`, `dd`, `rm -rf /`).
 *   **WorkingDirectory Boundary**: Restricts the agent from writing files outside the active workspace directory unless confirmed by the user.
 
-### 2. Cognitive Cloud Safety (Google Cloud Model Armor)
-Integrates with Google Cloud Model Armor to check the inputs and outputs of commands and files.
+### 2. Agent Context Scanning (Google Cloud Model Armor)
+Integrates with Google Cloud Model Armor to check the inputs and outputs of commands, files, prompts, and responses. It runs on **every hook** (UserPromptSubmit, PreToolUse, PostToolUse, Stop).
 *   **PII & Sensitive Data Protection (SDP)**: Redacts or flags exposure of sensitive data like social security numbers, credit cards, or API credentials.
 *   **Prompt Injection Detection**: Blocks hidden instructions in files or downloaded materials trying to hijack the agent.
 *   **Responsible AI (RAI)**: Filters hate speech, harassment, sexually explicit, and dangerous content.
@@ -56,7 +58,7 @@ The plugin ships two ready-to-use coverage profiles, assembled from the hook mod
 | Path through the system | Hook | Standard | Vertex Simulation |
 |-------------------------|------|:--------:|:-----------------:|
 | User message → model | UserPromptSubmit (`--prompt-hook`) | ✅ | ✅ |
-| Model → tool call request (+ local rules) | PreToolUse (`--hook`) | ✅ | ✅ |
+| Model → tool call request (+ behavioral detections) | PreToolUse (`--hook`) | ✅ | ✅ |
 | Tool result → model | PostToolUse (`--post-hook`) | ✅ | ✅ |
 | Model → user response | Stop (`--response-hook`) | — | ✅ |
 
@@ -67,7 +69,7 @@ The plugin ships two ready-to-use coverage profiles, assembled from the hook mod
 The plugin can be integrated into Claude Code via the following hook modes (and as an MCP server):
 
 ### A. PreToolUse Hook Mode (Recommended)
-Intercepts tool execution *before* it happens, returning `allow`, `deny`, or `ask` (which prompts the user to confirm). Runs both Layer 1 (local CEL rules) and Layer 2 (Model Armor scan of Bash commands and file-write content).
+Intercepts tool execution *before* it happens, returning `allow`, `deny`, or `ask` (which prompts the user to confirm). Runs both **Agent Behavioral Detections** (local CEL rules) and **Agent Context Scanning** (Model Armor scan of Bash commands and file-write content).
 
 #### Registration
 Add the hook to your Claude Code settings (e.g., in `~/.claude/settings.json`):
@@ -208,8 +210,8 @@ Then register the hooks (see [Deployment Modes](#deployment-modes)), pointing th
 | `MODEL_ARMOR_TEMPLATE` | — | Full template resource path. The regional endpoint is derived from the `locations/<region>` segment automatically. |
 | `MODEL_ARMOR_TIMEOUT` | `10` | Per-scan network timeout in seconds. Prevents a slow or unreachable Model Armor service from hanging tool execution. |
 | `MODEL_ARMOR_FAIL_CLOSED` | `false` | When `true`, a Model Armor error or timeout on a PreToolUse scan results in `deny` instead of `allow`. Prompt and post hooks always fail open so the user is never locked out. |
-| `MODEL_ARMOR_RULES_ASK_ONLY` | `false` | When `true`, every Layer 1 (local rule) `deny` is downgraded to `ask`, so Layer 1 prompts for confirmation instead of hard-blocking. Model Armor cloud findings are unaffected. |
-| `MODEL_ARMOR_AUDIT_LOG` | — | When set to a file path, every decision (local rule, Model Armor, or error) is appended as a JSON line for auditing. |
+| `MODEL_ARMOR_RULES_ASK_ONLY` | `false` | When `true`, every Agent Behavioral Detections (local rule) `deny` is downgraded to `ask`, so the behavioral layer prompts for confirmation instead of hard-blocking. Agent Context Scanning (cloud) findings are unaffected. |
+| `MODEL_ARMOR_AUDIT_LOG` | — | When set to a file path, every decision (behavioral detection, context scan, or error) is appended as a JSON line for auditing. |
 
 ## Building from Source
 
@@ -223,7 +225,7 @@ go test -v ./...
 
 ---
 
-## Customizing Local Rules (`rules.yaml`)
+## Customizing Agent Behavioral Detections (`rules.yaml`)
 
 Rules are written in Common Expression Language (CEL) and structured with reusable `lists` and `macros`:
 
