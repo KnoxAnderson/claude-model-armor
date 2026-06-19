@@ -159,7 +159,44 @@ Add the server to your Claude configuration (e.g., in `~/.claude/config.json`):
 
 1.  **GCP Project**: A Google Cloud project with the Model Armor API enabled.
 2.  **Authentication**: Authenticated GCP environment (e.g., via `gcloud auth application-default login`).
-3.  **Go Runtime**: Go 1.23+ is required to build the high-performance binary.
+3.  **Go Runtime** *(optional)*: Go 1.23+ is only required if you build from source. Most users can download a prebuilt binary from the [Releases](https://github.com/KnoxAnderson/claude-model-armor/releases) page instead.
+
+---
+
+## Installation
+
+Download a prebuilt binary for your platform from the [latest release](https://github.com/KnoxAnderson/claude-model-armor/releases/latest) — no Go toolchain required.
+
+| Platform | Asset |
+|----------|-------|
+| macOS Apple Silicon | `claude-model-armor-darwin-arm64` |
+| macOS Intel | `claude-model-armor-darwin-amd64` |
+| Linux x86_64 | `claude-model-armor-linux-amd64` |
+| Linux ARM64 | `claude-model-armor-linux-arm64` |
+
+```bash
+# Pick the asset for your platform (this example: macOS Apple Silicon)
+VERSION=v0.1.0
+ASSET=claude-model-armor-darwin-arm64
+BASE=https://github.com/KnoxAnderson/claude-model-armor/releases/download/$VERSION
+
+# Download the binary and the checksums
+curl -L -o claude-model-armor      "$BASE/$ASSET"
+curl -L -o SHA256SUMS.txt          "$BASE/SHA256SUMS.txt"
+
+# Verify integrity, then install
+shasum -a 256 --ignore-missing -c SHA256SUMS.txt   # use `sha256sum` on Linux
+chmod +x claude-model-armor
+mkdir -p ~/.local/bin && mv claude-model-armor ~/.local/bin/
+
+# Fetch the default rule set alongside the binary
+curl -L -o ~/.local/bin/rules.yaml \
+  https://raw.githubusercontent.com/KnoxAnderson/claude-model-armor/main/rules.yaml
+```
+
+> On macOS, Gatekeeper may quarantine a downloaded binary. If you see “cannot be opened,” run `xattr -d com.apple.quarantine ~/.local/bin/claude-model-armor`.
+
+Then register the hooks (see [Deployment Modes](#deployment-modes)), pointing the `command` at `~/.local/bin/claude-model-armor`.
 
 ---
 
