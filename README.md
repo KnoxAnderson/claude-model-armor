@@ -1,173 +1,22 @@
 # Claude Model Armor Guardrails
 
-A high-performance, dual-layer security guardrail system for Claude Code, written in Go for maximum execution speed and minimal latency overhead. It combines **Agent Behavioral Detections** (a deterministic local policy engine) with **Agent Context Scanning** (a cloud-based content safety filter).
-
-## Dual-Layer Security Architecture
-
-This plugin protects your environment using two complementary security layers — **Agent Behavioral Detections** (local) and **Agent Context Scanning** (cloud):
-
-```
-[Claude Code Tool Call]
-          │
-          ▼
-┌──────────────────────────────────────────────┐
-│  Agent Behavioral Detections (Local CEL)    │
-│  - Blocks sensitive path access (/etc, .ssh) │
-│  - Prevents sandbox-disable configurations   │
-│  - Intercepts destructive shell commands    │
-│  - Restricts operations outside CWD          │
-│  (PreToolUse only)                           │
-└──────────────────────┬───────────────────────┘
-                       │ (if allowed)
-                       ▼
-┌──────────────────────────────────────────────┐
-│  Agent Context Scanning (GCP Model Armor)   │
-│  - Screens command/file/prompt text via APIs │
-│  - Detects Prompt Injection & Jailbreaks     │
-│  - Scans for PII / Sensitive Data (SDP)      │
-│  - Blocks Malicious URIs & RAI violations    │
-│  (all hooks, inbound + outbound)             │
-└──────────────────────┬───────────────────────┘
-                       │ (if allowed)
-                       ▼
-             [Execute Tool Call]
-```
-
-### 1. Agent Behavioral Detections (CEL Engine)
-Powered by `google/cel-go`, this layer evaluates coding agent tool calls (Read, Write, Edit, Bash) against a structured local rule set before execution. It runs **only on the PreToolUse hook**, where there is an action to gate.
-
-By default, it includes **60+ rules** designed for local system safety and agent containment:
-*   **Path Protection**: Prevents reads or writes to system files (`/etc`, `/var`, `/boot`), GPG, SSH keys, AWS/GCP cloud credentials, and browser databases.
-*   **Sandbox Enforcement**: Intercepts requests to disable Claude Code's OS-level process sandboxing or to bypass approval dialogs.
-*   **Destructive Shell Commands**: Denies highly destructive shell pipelines (e.g., `sudo su`, `mkfs`, `dd`, `rm -rf /`).
-*   **WorkingDirectory Boundary**: Restricts the agent from writing files outside the active workspace directory unless confirmed by the user.
-
-### 2. Agent Context Scanning (Google Cloud Model Armor)
-Integrates with Google Cloud Model Armor to check the inputs and outputs of commands, files, prompts, and responses. It runs on **every hook** (UserPromptSubmit, PreToolUse, PostToolUse, Stop).
-*   **PII & Sensitive Data Protection (SDP)**: Redacts or flags exposure of sensitive data like social security numbers, credit cards, or API credentials.
-*   **Prompt Injection Detection**: Blocks hidden instructions in files or downloaded materials trying to hijack the agent.
-*   **Responsible AI (RAI)**: Filters hate speech, harassment, sexually explicit, and dangerous content.
-*   **Phishing & Malicious URLs**: Screens URLs present in commands or file edits.
-
----
-
-## Operating Modes
-
-The plugin ships two ready-to-use coverage profiles, assembled from the hook modes below:
-
-| Path through the system | Hook | Standard | Vertex Simulation |
-|-------------------------|------|:--------:|:-----------------:|
-| User message → model | UserPromptSubmit (`--prompt-hook`) | ✅ | ✅ |
-| Model → tool call request (+ behavioral detections) | PreToolUse (`--hook`) | ✅ | ✅ |
-| Tool result → model | PostToolUse (`--post-hook`) | ✅ | ✅ |
-| Model → user response | Stop (`--response-hook`) | — | ✅ |
-
-**Standard** scans the agent's inputs and actions. **Vertex Simulation** adds the outbound model-response scan (`SanitizeModelResponse`), so every leg that would cross a Vertex API boundary is covered in both directions — approximating what Model Armor sees when integrated natively into Vertex AI.
-
-## Deployment Modes
-
-The plugin can be integrated into Claude Code via the following hook modes (and as an MCP server):
-
-### A. PreToolUse Hook Mode (Recommended)
-Intercepts tool execution *before* it happens, returning `allow`, `deny`, or `ask` (which prompts the user to confirm). Runs both **Agent Behavioral Detections** (local CEL rules) and **Agent Context Scanning** (Model Armor scan of Bash commands and file-write content).
-
-#### Registration
-Add the hook to your Claude Code settings (e.g., in `~/.claude/settings.json`):
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/absolute/path/to/claude-model-armor/claude-model-armor",
-            "args": [
-              "--hook"
-            ]
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-### B. UserPromptSubmit Hook Mode
-Scans each user message through Model Armor *before* it reaches Claude. On a flag it emits a `block` decision (honored by the Claude Code CLI) and also injects an `additionalContext` security alert so clients that do not hard-block on prompt submit (e.g. the desktop app) still warn the model. Register with `--prompt-hook`:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "/absolute/path/to/claude-model-armor", "args": ["--prompt-hook"] } ] }
-    ]
-  }
-}
-```
-
-### C. PostToolUse Hook Mode
-Scans the *output* of read-like tools (`Read`, `Bash`, `WebFetch`, `Grep`) after they run — the primary defense against prompt-injection payloads hidden inside files or command output. The content is already in context and cannot be unread, so on a flag the hook injects an `additionalContext` alert instructing the model to treat the output as untrusted data. Register with `--post-hook`:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "/absolute/path/to/claude-model-armor", "args": ["--post-hook"] } ] }
-    ]
-  }
-}
-```
-
-### D. Stop Hook Mode (Vertex Simulation)
-Scans the *assistant's own response* after each turn through Model Armor's model-response API (`SanitizeModelResponse` — RAI, PII leakage, and malicious URLs the model emitted). On a flag it blocks the Stop, forcing the model to revise — mirroring how Vertex-integrated Model Armor rejects an unsafe model response. A loop guard (`stop_hook_active`) prevents endless regeneration. Register with `--response-hook`:
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "/absolute/path/to/claude-model-armor", "args": ["--response-hook"] } ] }
-    ]
-  }
-}
-```
-
-### E. MCP Server Mode
-Exposes a `scan_content` tool to Claude, allowing it to inspect text blocks on-demand.
-
-#### Registration
-Add the server to your Claude configuration (e.g., in `~/.claude/config.json`):
-
-```json
-{
-  "mcpServers": {
-    "model-armor": {
-      "command": "/absolute/path/to/claude-model-armor/claude-model-armor",
-      "args": [],
-      "env": {
-        "GOOGLE_CLOUD_PROJECT": "your-gcp-project-id",
-        "MODEL_ARMOR_TEMPLATE": "projects/your-gcp-project-id/locations/us-central1/templates/your-template-id"
-      }
-    }
-  }
-}
-```
+A dual-layer security guardrail system for Claude Code, written in Go. It combines a local deterministic rule engine with Google Cloud Model Armor's content safety APIs to screen every prompt, tool call, and response.
 
 ---
 
 ## Prerequisites
 
-1.  **GCP Project**: A Google Cloud project with the Model Armor API enabled.
-2.  **Authentication**: Authenticated GCP environment (e.g., via `gcloud auth application-default login`).
-3.  **Go Runtime** *(optional)*: Go 1.23+ is only required if you build from source. Most users can download a prebuilt binary from the [Releases](https://github.com/KnoxAnderson/claude-model-armor/releases) page instead.
+- **Claude Code** installed and running
+- **Google Cloud account** with the Model Armor API enabled — required for cloud scanning (prompt injection, PII, RAI filtering). The local rules layer works without GCP.
+- **`gcloud` CLI** authenticated: `gcloud auth application-default login`
 
 ---
 
-## Installation
+## Quick Start
 
-Download a prebuilt binary for your platform from the [latest release](https://github.com/KnoxAnderson/claude-model-armor/releases/latest) — no Go toolchain required.
+### 1. Download the binary
+
+Download the binary for your platform from the [latest release](https://github.com/KnoxAnderson/claude-model-armor/releases/latest):
 
 | Platform | Asset |
 |----------|-------|
@@ -177,107 +26,91 @@ Download a prebuilt binary for your platform from the [latest release](https://g
 | Linux ARM64 | `claude-model-armor-linux-arm64` |
 
 ```bash
-# Pick the asset for your platform (this example: macOS Apple Silicon)
 VERSION=v0.1.0
-ASSET=claude-model-armor-darwin-arm64
+ASSET=claude-model-armor-darwin-arm64   # change for your platform
 BASE=https://github.com/KnoxAnderson/claude-model-armor/releases/download/$VERSION
 
-# Download the binary and the checksums
-curl -L -o claude-model-armor      "$BASE/$ASSET"
-curl -L -o SHA256SUMS.txt          "$BASE/SHA256SUMS.txt"
-
-# Verify integrity, then install
-shasum -a 256 --ignore-missing -c SHA256SUMS.txt   # use `sha256sum` on Linux
+curl -L -o claude-model-armor "$BASE/$ASSET"
+curl -L -o SHA256SUMS.txt "$BASE/SHA256SUMS.txt"
+shasum -a 256 --ignore-missing -c SHA256SUMS.txt   # use sha256sum on Linux
 chmod +x claude-model-armor
 mkdir -p ~/.local/bin && mv claude-model-armor ~/.local/bin/
+```
 
-# Fetch the default rule set alongside the binary
+### 2. macOS only: clear the Gatekeeper quarantine
+
+macOS blocks unsigned binaries downloaded from the internet. Run this before anything else, or the plugin will silently fail:
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/claude-model-armor
+```
+
+### 3. Download the default rule set
+
+```bash
 curl -L -o ~/.local/bin/rules.yaml \
   https://raw.githubusercontent.com/KnoxAnderson/claude-model-armor/main/rules.yaml
 ```
 
-> On macOS, Gatekeeper may quarantine a downloaded binary. If you see “cannot be opened,” run `xattr -d com.apple.quarantine ~/.local/bin/claude-model-armor`.
+### 4. Add hooks to Claude Code settings
 
-Then register the hooks (see [Deployment Modes](#deployment-modes)), pointing the `command` at `~/.local/bin/claude-model-armor`.
+Open (or create) `~/.claude/settings.json` and add the `hooks` block below. Use the **absolute path** to the binary — tilde expansion is not guaranteed in hook commands.
 
----
-
-## Configuration (Environment Variables)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GOOGLE_CLOUD_PROJECT` | — | GCP project ID hosting the Model Armor template. |
-| `MODEL_ARMOR_TEMPLATE` | — | Full template resource path. The regional endpoint is derived from the `locations/<region>` segment automatically. |
-| `MODEL_ARMOR_TIMEOUT` | `10` | Per-scan network timeout in seconds. Prevents a slow or unreachable Model Armor service from hanging tool execution. |
-| `MODEL_ARMOR_FAIL_CLOSED` | `false` | When `true`, a Model Armor error or timeout on a PreToolUse scan results in `deny` instead of `allow`. Prompt and post hooks always fail open so the user is never locked out. |
-| `MODEL_ARMOR_RULES_ASK_ONLY` | `false` | When `true`, every Agent Behavioral Detections (local rule) `deny` is downgraded to `ask`, so the behavioral layer prompts for confirmation instead of hard-blocking. Agent Context Scanning (cloud) findings are unaffected. |
-| `MODEL_ARMOR_AUDIT_LOG` | — | When set to a file path, every decision (behavioral detection, context scan, or error) is appended as a JSON line for auditing. |
-
-## Building from Source
-
-```bash
-# Build the binary
-go build -o claude-model-armor main.go
-
-# Run unit tests
-go test -v ./...
-```
-
----
-
-## Customizing Agent Behavioral Detections (`rules.yaml`)
-
-Rules are written in Common Expression Language (CEL) and structured with reusable `lists` and `macros`:
-
-```yaml
-lists:
-  - name: sensitive_paths
-    items:
-      - /etc/
-      - /private/etc/
-      - /root/
-
-macros:
-  - name: is_write_tool
-    expression: tool.name in ["Write", "Edit"]
-
-rules:
-  - name: deny_sensitive_paths
-    description: "Prevent modification of system paths"
-    expression: is_write_tool && sensitive_paths.exists(p, tool.real_file_path.startsWith(p))
-    action: deny
-    message: "Security blocked modification of system path: %tool.real_file_path%"
-```
-
----
-
-## Enterprise Orchestration & Deployment
-
-For security teams looking to deploy and enforce `claude-model-armor` across all developer machines within a company, follow this orchestration guide:
-
-### 1. Centralized Binary & Rules Distribution
-Use an endpoint management platform or configuration manager (such as Jamf Pro, Microsoft Intune, Ansible, or Chef) to distribute the following assets to developer workstations:
-*   **Production Binary**: Install `claude-model-armor` to a read-only system executable directory (e.g., `/usr/local/bin/claude-model-armor`).
-*   **Local Rules file**: Deploy the company-approved `rules.yaml` to a centralized configuration directory (e.g., `/etc/claude-model-armor/rules.yaml`). Ensure this file is owned by root/system and read-only to prevent users from modifying or tampering with the rules locally.
-
-### 2. Global Hook Configuration
-Automate the injection of the `PreToolUse` hook configuration into each developer's `~/.claude/settings.json`. The following configuration enforces the security check and points to the read-only rules file using the `--rules` flag:
+If `settings.json` already exists, merge the `hooks` key into it rather than replacing the whole file.
 
 ```json
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOUR_USERNAME/.local/bin/claude-model-armor",
+            "args": [
+              "--prompt-hook",
+              "--template",
+              "projects/YOUR_PROJECT/locations/us-central1/templates/YOUR_TEMPLATE"
+            ]
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/claude-model-armor",
+            "command": "/Users/YOUR_USERNAME/.local/bin/claude-model-armor",
             "args": [
               "--hook",
               "--rules",
-              "/etc/claude-model-armor/rules.yaml"
+              "/Users/YOUR_USERNAME/.local/bin/rules.yaml"
             ]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOUR_USERNAME/.local/bin/claude-model-armor",
+            "args": ["--post-hook"]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOUR_USERNAME/.local/bin/claude-model-armor",
+            "args": ["--response-hook"]
           }
         ]
       }
@@ -286,18 +119,134 @@ Automate the injection of the `PreToolUse` hook configuration into each develope
 }
 ```
 
-This can be pushed automatically via a logon/startup shell script or by orchestrating changes to the settings file using `jq`.
+> **No GCP yet?** Remove the `--template` arg from `UserPromptSubmit`. The local rules layer runs independently — cloud scanning simply won't be active until you set up a template.
 
-### 3. Environment Variable Enforcement
-Model Armor requires the Google Cloud client environment variables for cognitive safety screening. Push the following environment variables globally (e.g., via `/etc/profile.d/model_armor.sh` on macOS/Linux, or registry key group policies on Windows):
-*   `GOOGLE_CLOUD_PROJECT`: The ID of your centralized Google Cloud project.
-*   `MODEL_ARMOR_TEMPLATE`: The resource path to your Model Armor safety template: `projects/<project-id>/locations/<region>/templates/<template-id>`
+Restart Claude Code. The guardrails are active.
 
-Ensure that developers are authenticated with the GCP project (e.g., via a shared service account key or dynamic credential exchange via `gcloud auth application-default login`).
+---
 
-### 4. Policy Limits Hardening (Tamper Prevention)
-To prevent developers from disabling or unstaging the security hook configuration, deploy a read-only **Policy Limits** file to:
-*   `~/.claude/policy-limits.json`
+## Cloud Scanning Setup
 
-Ensure the limits file has permission rules restricting the modification of Claude's environment or bypassing approvals. The local rules engine itself also blocks attempts to write to settings or policy limits via the `Deny writes to Claude Code settings file` and `Deny writes to Claude Code policy limits file` rules.
+The cloud layer requires a Google Cloud project with Model Armor enabled.
 
+1. Enable the [Model Armor API](https://console.cloud.google.com/model-armor) in your GCP project
+2. Create a template in the Model Armor console
+3. Run `gcloud auth application-default login`
+4. Set these environment variables (add to your shell profile to make them permanent):
+
+```bash
+export GOOGLE_CLOUD_PROJECT=your-project-id
+export MODEL_ARMOR_TEMPLATE=projects/your-project-id/locations/us-central1/templates/your-template-id
+```
+
+5. Add the `--template` arg to the `UserPromptSubmit` hook as shown in step 4 above
+
+---
+
+## How It Works
+
+Every Claude Code action passes through two layers:
+
+```
+[User prompt / Tool call / Tool output / Model response]
+          │
+          ▼
+┌──────────────────────────────────────────────────┐
+│  Layer 1: Local Rule Engine                      │
+│  Runs before every tool call (PreToolUse).       │
+│  Evaluates 60+ CEL rules from rules.yaml.        │
+│  Flags: sensitive path access, credential reads, │
+│  sandbox escapes, destructive commands, supply   │
+│  chain attacks, and more.                        │
+│  Works offline — no GCP required.                │
+└──────────────────────┬───────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────┐
+│  Layer 2: Cloud Content Scanning (Model Armor)   │
+│  Runs on all hooks. Requires GCP.                │
+│  - Prompt injection & jailbreak detection        │
+│  - PII / sensitive data exposure (SDP)           │
+│  - Responsible AI (RAI) content filtering        │
+│  - Malicious URL detection                       │
+└──────────────────────┬───────────────────────────┘
+                       │
+                       ▼
+        [Action proceeds or user is prompted]
+```
+
+### Hook coverage
+
+| What's being scanned | Hook | Layer 1 | Layer 2 |
+|----------------------|------|:-------:|:-------:|
+| User messages | UserPromptSubmit | — | ✅ |
+| Tool calls + behavioral rules | PreToolUse | ✅ | ✅ |
+| Tool output (injection in files/command output) | PostToolUse | — | ✅ |
+| Claude's responses | Stop | — | ✅ |
+
+---
+
+## Customizing Rules
+
+Rules live in `rules.yaml` and are written in [Common Expression Language (CEL)](https://github.com/google/cel-spec). By default, every flagged action uses `ask` — Claude pauses and you choose whether to allow or cancel.
+
+```yaml
+rules:
+  - name: Ask before writing outside working directory
+    description: "Flags writes outside the current project directory."
+    expression: is_write_tool && tool.real_file_path != "" && is_outside_cwd
+    action: ask
+    message: "CONFIRMATION REQUIRED: Claude wants to write to %tool.real_file_path%, which is outside your working directory (%agent.real_cwd%). Approve to allow or deny to cancel."
+```
+
+> **Want a hard block instead of a prompt?** Change `action: ask` to `action: deny` on any rule and the hook will block that action outright without asking.
+
+Rules support three actions: `allow` (log and pass through), `ask` (pause and prompt the user), `deny` (block immediately).
+
+The rule set ships with reusable `lists` (path groups, file name sets) and `macros` (CEL sub-expressions) you can compose into new rules. See `rules.yaml` for the full set.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GOOGLE_CLOUD_PROJECT` | — | GCP project ID hosting your Model Armor template. |
+| `MODEL_ARMOR_TEMPLATE` | — | Full template resource path (`projects/.../locations/.../templates/...`). |
+| `MODEL_ARMOR_TIMEOUT` | `10` | Per-scan network timeout in seconds. Prevents a slow Model Armor service from hanging tool execution. |
+| `MODEL_ARMOR_FAIL_CLOSED` | `false` | When `true`, a Model Armor error or timeout on PreToolUse blocks the action instead of allowing it through. Prompt and post hooks always fail open. |
+| `MODEL_ARMOR_RULES_ASK_ONLY` | `false` | Downgrades any `deny` rule to `ask` at runtime without editing the yaml. Not needed if your rules already use `ask` — the default rule set does. |
+| `MODEL_ARMOR_AUDIT_LOG` | — | File path to append a JSON audit log of every decision. |
+
+---
+
+## Building from Source
+
+Requires Go 1.23+.
+
+```bash
+go build -o claude-model-armor main.go
+go test -v ./...
+```
+
+---
+
+## Enterprise Deployment
+
+### Distribute the binary and rules centrally
+
+Use your endpoint management platform (Jamf, Intune, Ansible, Chef) to:
+- Install `claude-model-armor` to a read-only system path (e.g., `/usr/local/bin/claude-model-armor`)
+- Deploy a company-approved `rules.yaml` to a protected location (e.g., `/etc/claude-model-armor/rules.yaml`, owned by root, not writable by users)
+
+### Enforce hooks globally
+
+Push the hook configuration to each developer's `~/.claude/settings.json` via logon script or configuration management, pointing `--rules` at the protected rules file and `command` at the system binary path.
+
+### Set environment variables system-wide
+
+Push `GOOGLE_CLOUD_PROJECT` and `MODEL_ARMOR_TEMPLATE` via `/etc/profile.d/model_armor.sh` (macOS/Linux) or Group Policy (Windows). Ensure developers are authenticated to the GCP project via `gcloud auth application-default login` or a service account.
+
+### Tamper prevention
+
+Deploy `~/.claude/policy-limits.json` as a read-only file to prevent users from disabling hooks. The local rules engine also blocks any attempt by Claude to write to Claude Code settings or policy-limits files.
