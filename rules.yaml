@@ -586,25 +586,25 @@ rules:
     description: "Logs when a coding agent reads, writes, or edits files outside the session's working directory. Informational only — does not block."
     expression: tool.name in ["Write", "Edit", "Read"] && tool.real_file_path != "" && is_outside_cwd
     action: allow
-    message: Model Armor detected access to %tool.real_file_path% which is outside the working directory %agent.real_cwd%
+    message: Model Armor detected access to %tool.real_file_path% outside the working directory %agent.real_cwd%
 
   - name: Ask before writing outside working directory
     description: "Requires user confirmation when a coding agent writes or edits a file outside the session's working directory. Excludes ~/.claude/ routine bookkeeping."
     expression: is_write_tool && tool.real_file_path != "" && is_outside_cwd && !is_sensitive_path && !is_claude_data_path
     action: ask
-    message: Model Armor requires confirmation to write to %tool.real_file_path% because it is outside the working directory %agent.real_cwd%
+    message: "CONFIRMATION REQUIRED: Claude wants to write to %tool.real_file_path%, which is outside your current working directory (%agent.real_cwd%). This could modify files you did not intend to change. Approve to allow or deny to cancel."
 
-  - name: Deny reading sensitive paths
-    description: Blocks reads from sensitive filesystem locations such as ~/.ssh/, cloud credential directories, and environment variable files.
+  - name: Ask before reading sensitive paths
+    description: Asks before reading from sensitive filesystem locations such as ~/.ssh/, cloud credential directories, and environment variable files.
     expression: tool.name == "Read" && is_sensitive_path
-    action: deny
-    message: Model Armor blocked reading %tool.real_file_path% because it is a sensitive path
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to read %tool.real_file_path%, which is a sensitive path that may contain credentials, private keys, or system configuration. Approve only if you explicitly intended Claude to access this file."
 
-  - name: Deny writing to sensitive paths
-    description: Blocks writes to sensitive filesystem locations such as /etc/, ~/.ssh/, and cloud credential directories.
+  - name: Ask before writing to sensitive paths
+    description: Asks before writing to sensitive filesystem locations such as /etc/, ~/.ssh/, and cloud credential directories.
     expression: is_write_tool && is_sensitive_path
-    action: deny
-    message: Model Armor blocked writing to %tool.real_file_path% because it is a sensitive path
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to write to %tool.real_file_path%, which is a sensitive system or credential path. Writing here could expose credentials or alter critical system configuration. Approve only if you explicitly intended this."
 
   # -------------------------------------------------------------------------
   # Sandbox Evasion & Escapes
@@ -614,137 +614,137 @@ rules:
     description: "Requires user confirmation when a coding agent writes or edits its own sandbox configuration file with content that may disable OS-level process isolation."
     expression: is_write_tool && tool.real_file_path != "" && is_agent_sandbox_config && is_sandbox_disable_content
     action: ask
-    message: Model Armor requires confirmation before %agent.name% modifies its sandbox configuration at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to modify its sandbox configuration at %tool.real_file_path% with content that may disable process isolation. Approve to allow or deny to cancel."
 
   - name: Ask before Claude Code per-command sandbox escape
     description: "Requires user confirmation when Claude Code invokes the Bash tool with dangerouslyDisableSandbox set to true."
     expression: tool.name == "Bash" && tool.input.contains("dangerouslyDisableSandbox") && tool.input.contains("true")
     action: ask
-    message: Model Armor requires confirmation before Claude Code runs an unsandboxed Bash command (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to run an unsandboxed Bash command — %tool.input_command%. The dangerouslyDisableSandbox flag removes OS-level restrictions on this command. Approve to allow or deny to cancel."
 
-  - name: Deny Bash command writing sandbox-disable content to agent settings file
-    description: Blocks Bash commands that reference an agent settings file path combined with sandbox-disabling content.
+  - name: Ask before Bash command writing sandbox-disable content to agent settings
+    description: Asks before Bash commands that reference an agent settings file path combined with sandbox-disabling content.
     expression: tool.name == "Bash" && is_bash_sandbox_settings_path && is_bash_sandbox_disable_cmd
-    action: deny
-    message: Model Armor blocked %agent.name% from disabling its sandbox via Bash command:%tool.input_command%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to disable its own sandbox via a Bash command targeting an agent settings file — %tool.input_command%. This could remove safety restrictions from future agent actions. Approve only if you explicitly intended this."
 
-  - name: Deny Codex CLI sandbox bypass flag
-    description: Blocks Bash invocations of the Codex CLI with flags that bypass sandbox isolation.
+  - name: Ask before Codex CLI sandbox bypass flag
+    description: Asks before Bash invocations of the Codex CLI with flags that bypass sandbox isolation.
     expression: tool.name == "Bash" && is_codex_sandbox_bypass
-    action: deny
-    message: Model Armor blocked %agent.name% from starting Codex with a sandbox bypass flag (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to launch Codex with a sandbox bypass flag — %tool.input_command%. This removes isolation controls from the Codex process. Approve only if you explicitly intended this."
 
-  - name: Deny Gemini CLI sandbox disable via environment variable
-    description: Blocks Bash commands that set GEMINI_SANDBOX to a disabling value.
+  - name: Ask before Gemini CLI sandbox disable via environment variable
+    description: Asks before Bash commands that set GEMINI_SANDBOX to a disabling value.
     expression: tool.name == "Bash" && is_gemini_sandbox_env_bypass
-    action: deny
-    message: Model Armor blocked %agent.name% from disabling Gemini sandbox via environment variable (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to disable the Gemini sandbox via an environment variable — %tool.input_command%. This would remove process isolation for the Gemini agent. Approve only if you explicitly intended this."
 
-  - name: Deny Bash command replacing agent sandbox settings file
-    description: "Blocks Bash commands that replace an agent sandbox settings file via cp, mv, or sed -i."
+  - name: Ask before Bash command replacing agent sandbox settings file
+    description: "Asks before Bash commands that replace an agent sandbox settings file via cp, mv, or sed -i."
     expression: tool.name == "Bash" && is_bash_sandbox_settings_replace
-    action: deny
-    message: Model Armor blocked %agent.name% from replacing an agent sandbox settings file (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to replace an agent sandbox settings file via Bash — %tool.input_command%. Replacing this file could alter or disable safety restrictions. Approve only if you explicitly intended this."
 
   # -------------------------------------------------------------------------
   # Shell Command Injection & Host Abuse
   # -------------------------------------------------------------------------
 
-  - name: Deny credential file access via Bash
-    description: Blocks Bash commands that reference credential files or secret environment variable names.
+  - name: Ask before credential file access via Bash
+    description: Asks before Bash commands that reference credential files or secret environment variable names.
     expression: is_bash && references_credential
-    action: deny
-    message: Model Armor blocked a Bash command referencing a credential path or secret token (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to run a Bash command referencing a credential file or secret token — %tool.input_command%. This could expose private keys or API credentials. Approve only if you explicitly intended Claude to access these credentials."
 
-  - name: Deny credential file access via Read tool
-    description: Blocks Read tool calls targeting well-known credential file paths.
+  - name: Ask before credential file access via Read tool
+    description: Asks before Read tool calls targeting well-known credential file paths.
     expression: is_read_credential_path
-    action: deny
-    message: Model Armor blocked the Read tool accessing a credential file at %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to read a credential file at %tool.real_file_path%. This file may contain private keys, access tokens, or authentication secrets. Approve only if you explicitly intended Claude to read this file."
 
-  - name: Deny destructive system commands
-    description: Blocks shell commands whose substrings unambiguously indicate a destructive or privilege-elevating operation.
+  - name: Ask before destructive system commands
+    description: Asks before shell commands whose substrings unambiguously indicate a destructive or privilege-elevating operation.
     expression: is_bash && is_destructive_command
-    action: deny
-    message: Model Armor blocked a destructive system command (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to run a destructive or privilege-escalating system command — %tool.input_command%. This could irreversibly damage the system or gain elevated access. Approve only if you explicitly intended this."
 
   - name: Ask before potentially destructive shell commands
     description: Requires user confirmation before commands whose dangerous form overlaps with legitimate development workflows.
     expression: is_bash && is_likely_destructive_command && !is_pure_search_or_print_command
     action: ask
-    message: Model Armor requires confirmation before a potentially destructive shell command (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to run a potentially destructive shell command — %tool.input_command%. Commands like rm -rf or shutdown can cause irreversible data loss. Approve to allow or deny to cancel."
 
   - name: Ask before container privilege escalation or host breakout
     description: Requires user confirmation before Bash commands that grant a container host-equivalent power.
     expression: is_bash && is_container_privilege_escalation
     action: ask
-    message: Model Armor requires confirmation before %agent.name% runs a container command that escalates privileges (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to run a container command that escalates privileges or breaks out of container isolation — %tool.input_command%. This could give the container host-level access. Approve to allow or deny to cancel."
 
-  - name: Deny pipe to shell interpreter
-    description: Blocks Bash commands that pipe network-fetched or generated content directly into a shell interpreter.
+  - name: Ask before pipe to shell interpreter
+    description: Asks before Bash commands that pipe network-fetched or generated content directly into a shell interpreter.
     expression: is_bash && is_pipe_to_shell
-    action: deny
-    message: Model Armor blocked piping content to a shell interpreter (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to pipe content directly into a shell interpreter — %tool.input_command%. Piping untrusted content to bash or sh is a common attack vector. Approve only if you explicitly intended this."
 
-  - name: Deny encoded payload execution
-    description: Blocks execution of base64-decoded or hex-decoded payloads and inline interpreter one-liners.
+  - name: Ask before encoded payload execution
+    description: Asks before execution of base64-decoded or hex-decoded payloads and inline interpreter one-liners.
     expression: is_bash && is_encoded_exec
-    action: deny
-    message: Model Armor blocked execution of a potentially encoded or inline-interpreted payload (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to execute a potentially encoded or inline-interpreted payload — %tool.input_command%. Executing decoded or one-liner payloads can hide malicious intent. Approve only if you explicitly intended this."
 
-  - name: Deny curl wget exfiltration
-    description: Blocks outbound data transfers via curl or wget that POST, upload, or pipe data.
+  - name: Ask before curl wget exfiltration
+    description: Asks before outbound data transfers via curl or wget that POST, upload, or pipe data.
     expression: is_bash && is_curl_exfil
-    action: deny
-    message: Model Armor blocked a potential data exfiltration command via curl or wget (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to send data to an external host via curl or wget — %tool.input_command%. This could exfiltrate sensitive files or credentials. Approve only if you explicitly intended this data transfer."
 
   - name: Ask before writing to tmp staging paths
     description: Requires user confirmation for Write and Edit operations targeting temp paths.
     expression: is_write_tool && tool.real_file_path != "" && is_tmp_path
     action: ask
-    message: Model Armor requires confirmation before writing to the staging path %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write to a temporary path at %tool.real_file_path%. Writing to temp directories can be used as a staging area before execution. Approve to allow or deny to cancel."
 
-  - name: Deny reverse shell via Bash
-    description: Blocks Bash commands that establish reverse shell connections.
+  - name: Ask before reverse shell via Bash
+    description: Asks before Bash commands that establish reverse shell connections.
     expression: is_bash && is_reverse_shell
-    action: deny
-    message: Model Armor blocked a reverse shell command (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to execute a reverse shell command — %tool.input_command%. This would create a remote shell connection giving an external party control over this system. Approve only if you explicitly intended this."
 
-  - name: Deny cloud metadata service access via Bash
-    description: Blocks curl and wget requests to cloud instance metadata services.
+  - name: Ask before cloud metadata service access via Bash
+    description: Asks before curl and wget requests to cloud instance metadata services.
     expression: is_bash && is_imds_access
-    action: deny
-    message: Model Armor blocked access to a cloud metadata service (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to access a cloud instance metadata service — %tool.input_command%. The metadata API can expose cloud credentials and instance configuration. Approve only if you explicitly intended Claude to access cloud metadata."
 
-  - name: Deny credential directory archive via Bash
-    description: Blocks shell commands that compress credential directories.
+  - name: Ask before credential directory archive via Bash
+    description: Asks before shell commands that compress credential directories.
     expression: is_bash && is_credential_archive
-    action: deny
-    message: Model Armor blocked archiving a credential directory (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to archive a credential directory — %tool.input_command%. Archiving credential directories is a common precursor to exfiltration. Approve only if you explicitly intended this."
 
-  - name: Deny SSH reverse tunnel and SOCKS proxy
-    description: Blocks SSH commands using reverse port forwarding, SOCKS proxy, or VPN tunnel flags.
+  - name: Ask before SSH reverse tunnel and SOCKS proxy
+    description: Asks before SSH commands using reverse port forwarding, SOCKS proxy, or VPN tunnel flags.
     expression: is_bash && is_ssh_tunnel
-    action: deny
-    message: Model Armor blocked an SSH tunneling or proxy command (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to establish an SSH tunnel or SOCKS proxy — %tool.input_command%. This could create covert network access or exfiltration channels. Approve only if you explicitly intended this."
 
   - name: Ask before cron and scheduled task manipulation
     description: Requires confirmation before crontab modifications or writes targeting /etc/cron directories.
     expression: is_bash && is_cron_persistence
     action: ask
-    message: Model Armor requires confirmation before modifying cron configuration (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to modify cron configuration — %tool.input_command%. Changes to cron can create persistent, scheduled command execution. Approve to allow or deny to cancel."
 
-  - name: Deny audit trail destruction
-    description: Blocks commands that wipe shell history.
+  - name: Ask before audit trail destruction
+    description: Asks before commands that wipe shell history.
     expression: is_bash && is_history_wipe
-    action: deny
-    message: Model Armor blocked a shell history wipe attempt (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to wipe shell history — %tool.input_command%. Destroying audit trails removes evidence of commands run in this session. Approve only if you explicitly intended this."
 
-  - name: Deny package publish
-    description: Blocks publishing commands across major ecosystems.
+  - name: Ask before package publish
+    description: Asks before publishing commands across major ecosystems.
     expression: is_bash && is_package_publish
-    action: deny
-    message: Model Armor blocked a package publish command (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to publish a package to a public registry — %tool.input_command%. Publishing packages is irreversible and affects all users of that package. Approve only if you explicitly intended to publish."
 
   # -------------------------------------------------------------------------
   # Persistent Injection & Supply Chain Security
@@ -754,184 +754,184 @@ rules:
     description: Requires confirmation when writing or editing shell startup files (.bashrc, .zshrc, etc.).
     expression: is_write_tool && tool.file_path != "" && tool.file_name in shell_startup_files
     action: ask
-    message: Model Armor requires confirmation before modifying shell startup file %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to modify a shell startup file at %tool.real_file_path%. Shell startup files run commands automatically on every new shell session. Approve to allow or deny to cancel."
 
   - name: Ask before writing agent instruction files outside working directory
     description: Requires confirmation when writing or editing agent instruction files outside the working directory.
     expression: is_write_tool && tool.file_path != "" && tool.file_name in agent_instruction_files && tool.real_file_path != "" && is_outside_cwd
     action: ask
-    message: Model Armor requires confirmation before writing agent instruction file %tool.real_file_path% outside working directory %agent.real_cwd%
+    message: "CONFIRMATION REQUIRED: Claude wants to write an agent instruction file (%tool.real_file_path%) outside the working directory %agent.real_cwd%. Agent instruction files control how AI agents behave and could affect other projects. Approve to allow or deny to cancel."
 
-  - name: Deny cross-agent authentication file access
-    description: Blocks reads of another agent's OAuth or session credential files.
+  - name: Ask before cross-agent authentication file access
+    description: Asks before reads of another agent's OAuth or session credential files.
     expression: is_cross_agent_auth_read
-    action: deny
-    message: Model Armor blocked %agent.name% from reading another agent's authentication file %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude (%agent.name%) is attempting to read another agent's authentication file at %tool.real_file_path%. Cross-agent credential access is unauthorized and could compromise other agent sessions. Approve only if you explicitly intended this."
 
-  - name: Deny MCP server or skill install from untrusted host
-    description: Blocks package manager installation commands that reference known malicious code hosting sites.
+  - name: Ask before MCP server or skill install from untrusted host
+    description: Asks before package manager installation commands that reference known malicious code hosting sites.
     expression: is_bash && is_mcp_install_from_untrusted
-    action: deny
-    message: Model Armor blocked installing a package or skill from an untrusted host (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to install a package or MCP server from an untrusted or known-malicious host — %tool.input_command%. Installing from untrusted sources can introduce malicious code. Approve only if you explicitly intended to install from this source."
 
-  - name: Deny MCP server execution from temporary directory
-    description: Blocks execution of processes using MCP transport flags from temp directories.
+  - name: Ask before MCP server execution from temporary directory
+    description: Asks before execution of processes using MCP transport flags from temp directories.
     expression: is_bash && is_mcp_temp_path
-    action: deny
-    message: Model Armor blocked executing a potential MCP server from a temporary directory (%tool.input_command%)
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to run a potential MCP server from a temporary directory — %tool.input_command%. Executing MCP servers from temp paths is a common prompt injection technique. Approve only if you explicitly intended this."
 
   - name: Ask before Glob with credential directory patterns
     description: Requires confirmation when the Glob tool is used with patterns that target credential directories.
     expression: is_credential_glob
     action: ask
-    message: Model Armor requires confirmation before globbing with a credential-targeting pattern (%tool.input%)
+    message: "CONFIRMATION REQUIRED: Claude wants to search for files matching credential-related patterns (%tool.input%). This could enumerate your SSH keys, AWS credentials, or other secrets. Approve to allow or deny to cancel."
 
-  - name: Deny MCP config with command from temporary directory
-    description: Blocks writing an MCP server configuration file where the server command field points to a temporary directory.
+  - name: Ask before MCP config with command from temporary directory
+    description: Asks before writing an MCP server configuration file where the server command field points to a temporary directory.
     expression: is_mcp_config_write && is_mcp_command_temp
-    action: deny
-    message: Model Armor blocked writing an MCP server config with a command path in temporary storage at %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to write an MCP server config at %tool.real_file_path% with a server command pointing to a temporary directory. This is a common technique to persist and execute malicious code. Approve only if you explicitly intended this."
 
-  - name: Deny MCP config with IOC domain in server URL
-    description: Blocks writing an MCP server configuration file that includes a known malicious domain in the url field.
+  - name: Ask before MCP config with IOC domain in server URL
+    description: Asks before writing an MCP server configuration file that includes a known malicious domain in the url field.
     expression: is_mcp_config_write && contains_ioc_domain
-    action: deny
-    message: Model Armor blocked writing an MCP server config with a malicious hosting domain in the server URL at %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to write an MCP server config at %tool.real_file_path% with a URL referencing a known malicious or untrusted domain. This could connect Claude to an attacker-controlled server. Approve only if you explicitly intended this."
 
   - name: Ask before MCP config with encoded server command
     description: Requires user confirmation when writing an MCP server configuration file that contains the substring "base64".
     expression: is_mcp_config_write && is_mcp_command_encoded
     action: ask
-    message: Model Armor requires confirmation before writing an MCP server config that references base64 at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write an MCP server config at %tool.real_file_path% with a base64-encoded server command. Encoded commands in configs can obscure malicious intent. Approve to allow or deny to cancel."
 
   - name: Ask before agent self-registering MCP server
     description: Requires user confirmation when the agent invokes commands to self-register MCP servers or plugins.
     expression: tool.name == "Bash" && is_mcp_self_register
     action: ask
-    message: Model Armor requires confirmation before the agent self-registers an MCP server or plugin (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to self-register an MCP server or plugin — %tool.input_command%. Agents self-registering external services can change Claude's capabilities without explicit user intent. Approve to allow or deny to cancel."
 
   - name: Ask before writing to Claude slash command directory
     description: Requires user confirmation when the agent writes or edits files under .claude/commands/.
     expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/commands/")
     action: ask
-    message: Model Armor requires confirmation before writing a Claude slash command at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write a slash command file at %tool.real_file_path%. Slash commands run as privileged instructions in Claude Code sessions. Approve to allow or deny to cancel."
 
   - name: Ask before writing CLAUDE.md outside working directory
     description: Requires user confirmation when the agent writes or edits a CLAUDE.md file outside the current working directory.
     expression: is_write_tool && tool.file_path != "" && tool.file_name == "CLAUDE.md" && tool.real_file_path != "" && is_outside_cwd
     action: ask
-    message: Model Armor requires confirmation before writing CLAUDE.md at %tool.real_file_path% outside working directory %agent.real_cwd%
+    message: "CONFIRMATION REQUIRED: Claude wants to write a CLAUDE.md file at %tool.real_file_path%, outside the working directory %agent.real_cwd%. CLAUDE.md files control agent behavior and could affect other projects. Approve to allow or deny to cancel."
 
-  - name: Deny skill command file with IOC domain in content
-    description: Blocks writing a skill or slash command file whose content references a known malicious domain.
+  - name: Ask before skill command file with IOC domain in content
+    description: Asks before writing a skill or slash command file whose content references a known malicious domain.
     expression: is_write_tool && tool.real_file_path != "" && is_skill_content_ioc
-    action: deny
-    message: Model Armor blocked writing a skill file with a malicious hosting domain in its content at %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to write a skill file at %tool.real_file_path% whose content references a known malicious domain. This could create a persistent backdoor in your Claude configuration. Approve only if you explicitly intended this."
 
-  - name: Deny skill command file with pipe-to-shell in content
-    description: Blocks writing a skill or slash command file whose content contains a pipe-to-shell pattern.
+  - name: Ask before skill command file with pipe-to-shell in content
+    description: Asks before writing a skill or slash command file whose content contains a pipe-to-shell pattern.
     expression: is_write_tool && tool.real_file_path != "" && is_skill_pipe_bash
-    action: deny
-    message: Model Armor blocked writing a skill file with a pipe-to-shell pattern in its content at %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to write a skill file at %tool.real_file_path% containing a pipe-to-shell pattern. This could create a persistent command injection vulnerability in your Claude configuration. Approve only if you explicitly intended this."
 
   - name: Ask before npx auto-accept MCP or skill installation
     description: Requires user confirmation when package install command bypasses the "install this package?" review step.
     expression: tool.name == "Bash" && is_npx_auto_accept_mcp_skill
     action: ask
-    message: Model Armor requires confirmation before auto-accepting package installation for an MCP server or skill (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to auto-install a package or MCP server without reviewing it first — %tool.input_command%. The -y flag skips the installation confirmation step. Approve to allow or deny to cancel."
 
   - name: Ask before Bash command writing to Claude slash command directory
     description: Requires user confirmation when a Bash command references the .claude/commands/ directory.
     expression: is_bash_commands_write
     action: ask
-    message: Model Armor requires confirmation before a Bash command accesses the Claude slash command directory (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to run a Bash command that accesses the Claude slash command directory — %tool.input_command%. This could add or modify privileged slash commands. Approve to allow or deny to cancel."
 
   - name: Ask before writing to Claude Code subagent definitions directory
     description: Requires user confirmation when the agent writes or edits files under ~/.claude/agents/.
     expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/agents/")
     action: ask
-    message: Model Armor requires confirmation before writing a Claude Code subagent definition at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write a subagent definition at %tool.real_file_path%. Subagent definitions control how Claude delegates tasks and could alter agent behavior. Approve to allow or deny to cancel."
 
   - name: Ask before writing to Claude Code skills directory
     description: Requires user confirmation when the agent writes or edits files under ~/.claude/skills/.
     expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/skills/")
     action: ask
-    message: Model Armor requires confirmation before writing a Claude Code skill at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write a skill file at %tool.real_file_path%. Skills extend Claude's capabilities and run as privileged instructions. Approve to allow or deny to cancel."
 
   - name: Ask before writing to Claude Code plugins directory
     description: Requires user confirmation when the agent writes or edits files under ~/.claude/plugins/.
     expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/plugins/")
     action: ask
-    message: Model Armor requires confirmation before writing to Claude Code plugin storage at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write to Claude Code plugin storage at %tool.real_file_path%. Plugins modify Claude's core behavior and tool availability. Approve to allow or deny to cancel."
 
   - name: Ask before writing to Claude Code settings backups directory
     description: Requires user confirmation when the agent writes or edits files under ~/.claude/backups/.
     expression: is_write_tool && tool.real_file_path != "" && tool.real_file_path.contains("/.claude/backups/")
     action: ask
-    message: Model Armor requires confirmation before writing to Claude Code settings backups at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write to Claude Code settings backups at %tool.real_file_path%. Modifying backup files could be used to restore unauthorized configurations. Approve to allow or deny to cancel."
 
   - name: Ask before agent writing hooks into Claude Code settings
     description: Requires user confirmation when the agent writes or edits settings with hooks configuration.
     expression: is_claude_settings_write && is_settings_hooks_content
     action: ask
-    message: Model Armor requires confirmation before %agent.name% writes a hooks entry into Claude Code settings at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude (%agent.name%) wants to write a hooks configuration into Claude Code settings at %tool.real_file_path%. Hooks run shell commands on every tool call and could create persistent unauthorized execution. Approve to allow or deny to cancel."
 
   - name: Ask before agent registering MCP servers in Claude settings
     description: Requires user confirmation when the agent writes or edits settings with mcpServers configuration.
     expression: is_claude_settings_write && is_settings_mcp_content
     action: ask
-    message: Model Armor requires confirmation before %agent.name% registers an MCP server in Claude Code settings at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude (%agent.name%) wants to register an MCP server in Claude Code settings at %tool.real_file_path%. MCP servers extend Claude's capabilities and run as external processes. Approve to allow or deny to cancel."
 
   - name: Ask before writing to git hooks directory
     description: Requires user confirmation when the agent writes or edits a file inside a .git/hooks/ directory.
     expression: is_git_hooks_write
     action: ask
-    message: Model Armor requires confirmation before writing a git hook at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write a git hook at %tool.real_file_path%. Git hooks run automatically on git operations and could execute unauthorized code on every commit, push, or checkout. Approve to allow or deny to cancel."
 
   - name: Ask before writing package registry redirect
     description: Requires user confirmation when the agent redirects package manager config downloads to a custom registry.
     expression: is_registry_config_write && is_registry_redirect_content
     action: ask
-    message: Model Armor requires confirmation before writing a package registry redirect to %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to write a package registry redirect to %tool.real_file_path%. Redirecting package managers to unauthorized registries is a common supply chain attack vector. Approve to allow or deny to cancel."
 
   - name: Ask before API base URL override in environment file
     description: Requires user confirmation when environment files override AI base URLs.
     expression: is_env_file_write && is_api_base_url_override
     action: ask
-    message: Model Armor requires confirmation before %agent.name% overrides an AI API base URL in %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude (%agent.name%) wants to override an AI API base URL in %tool.real_file_path%. Redirecting AI API calls could send your prompts and data to an unauthorized server. Approve to allow or deny to cancel."
 
   - name: Ask before writing AI API key to environment file
     description: Requires user confirmation when environment files contain AI provider API key variables.
     expression: is_env_file_write && is_api_key_in_env
     action: ask
-    message: Model Armor requires confirmation before %agent.name% writes an AI API key variable to %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude (%agent.name%) wants to write an AI API key variable to %tool.real_file_path%. Storing API keys in environment files could expose them if the file is shared or committed. Approve to allow or deny to cancel."
 
   - name: Ask before Bash command accessing git hooks directory
     description: Requires user confirmation when a Bash command references a .git/hooks/ directory path.
     expression: is_bash_git_hooks_write
     action: ask
-    message: Model Armor requires confirmation before a Bash command accesses the git hooks directory (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to run a Bash command that accesses the git hooks directory — %tool.input_command%. Git hooks run automatically on git operations. Approve to allow or deny to cancel."
 
   - name: Ask before Bash command redirecting package registry
     description: Requires user confirmation when a Bash command redirects global package manager configs.
     expression: tool.name == "Bash" && is_bash_registry_redirect
     action: ask
-    message: Model Armor requires confirmation before a Bash command redirects the package registry (%tool.input_command%)
+    message: "CONFIRMATION REQUIRED: Claude wants to redirect the package registry via Bash — %tool.input_command%. Redirecting package managers to unauthorized registries is a supply chain attack vector. Approve to allow or deny to cancel."
 
-  - name: Deny writes to Claude Code settings file
-    description: Blocks Write/Edit on ~/.claude/settings.json.
+  - name: Ask before writing to Claude Code settings file
+    description: Asks before Write/Edit on ~/.claude/settings.json.
     expression: is_write_tool && is_claude_settings_path
-    action: deny
-    message: Model Armor blocked writing to Claude Code settings at %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to write to Claude Code settings at %tool.real_file_path%. Modifying settings can change hooks, permissions, and MCP server configurations that control all of Claude's behavior. Approve only if you explicitly intended this."
 
-  - name: Deny writes to Claude Code policy limits file
-    description: Blocks Write/Edit on ~/.claude/policy-limits.json.
+  - name: Ask before writing to Claude Code policy limits file
+    description: Asks before Write/Edit on ~/.claude/policy-limits.json.
     expression: is_write_tool && tool.real_file_path.endsWith("/.claude/policy-limits.json")
-    action: deny
-    message: Model Armor blocked writing to Claude Code policy-limits.json at %tool.real_file_path%
+    action: ask
+    message: "SECURITY ALERT: Claude is attempting to write to Claude Code policy-limits.json at %tool.real_file_path%. This file controls security policy constraints — modifying it could remove safety limits. Approve only if you explicitly intended this."
 
   - name: Ask before reading Claude Code settings file
     description: Asks before the agent reads ~/.claude/settings.json.
     expression: tool.name == "Read" && is_claude_settings_path
     action: ask
-    message: Model Armor requires confirmation to read Claude Code settings at %tool.real_file_path%
+    message: "CONFIRMATION REQUIRED: Claude wants to read Claude Code settings at %tool.real_file_path%. Settings contain hook configurations, permission lists, and MCP server registrations. Approve to allow or deny to cancel."
