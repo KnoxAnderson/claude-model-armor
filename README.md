@@ -1,15 +1,13 @@
 # claude-model-armor
 
-Security guardrails for [Claude Code](https://claude.ai/code). Screens every prompt, tool call, and response through two layers: a local CEL rule engine that catches dangerous patterns instantly, and Google Cloud [Model Armor](https://cloud.google.com/security/products/model-armor) for cloud-based prompt injection, PII, and RAI filtering.
-
-Works without a GCP account — the local rule engine runs entirely offline.
+[Google Cloud Model Armor](https://cloud.google.com/security/products/model-armor) guardrails for [Claude Code](https://claude.ai/code). Screens every prompt, tool call, and response through Model Armor's prompt injection, PII, and RAI filters — plus a local CEL rule engine that catches dangerous patterns before they reach the API.
 
 ## Prerequisites
 
 - **Claude Code** installed
 - **macOS or Linux** (x86_64 or ARM64)
-- **GCP account** _(optional)_ — required for cloud scanning (prompt injection, PII, RAI). The local rule layer works without it.
-- **`gcloud` CLI** _(if using cloud scanning)_: `gcloud auth application-default login`
+- **GCP account** with the [Model Armor API enabled](https://cloud.google.com/security/products/model-armor/docs/before-you-begin)
+- **`gcloud` CLI** authenticated: `gcloud auth application-default login`
 
 ## Install
 
@@ -53,13 +51,13 @@ curl -fL -o ~/.local/bin/rules.yaml \
 
 **4. Wire up the Claude Code hooks**
 
-Add the `hooks` block to `~/.claude/settings.json`. Replace `YOUR_USERNAME` with your actual username, or run this to do it automatically:
+Add the `hooks` block to `~/.claude/settings.json`. Run this to generate it with your paths filled in:
 
 ```bash
 BINARY="$HOME/.local/bin/claude-model-armor"
 TEMPLATE="projects/YOUR_PROJECT/locations/us-central1/templates/YOUR_TEMPLATE"
 
-cat > /tmp/model-armor-hooks.json << EOF
+cat > /tmp/model-armor-hooks.json <<HOOKEOF
 {
   "hooks": {
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "$BINARY", "args": ["--prompt-hook", "--template", "$TEMPLATE"]}]}],
@@ -68,12 +66,10 @@ cat > /tmp/model-armor-hooks.json << EOF
     "Stop":             [{"hooks": [{"type": "command", "command": "$BINARY", "args": ["--response-hook"]}]}]
   }
 }
-EOF
+HOOKEOF
 ```
 
 Merge `model-armor-hooks.json` into your `~/.claude/settings.json`, then restart Claude Code. The guardrails are active.
-
-> **No GCP yet?** Remove `--template $TEMPLATE` from `UserPromptSubmit`. The local rule engine works immediately; cloud scanning can be added later.
 
 ---
 
@@ -85,7 +81,7 @@ User prompt / Tool call / Tool output / Model response
           ▼
 ┌──────────────────────────────────────────────────┐
 │  Layer 1: Local CEL Rule Engine                  │
-│  Runs on PreToolUse. Offline, zero latency.      │
+│  Runs on PreToolUse. Zero latency.               │
 │  40+ rules covering: credential access,          │
 │  sandbox escapes, reverse shells, exfiltration,  │
 │  MCP server attacks, agent self-modification.    │
@@ -94,8 +90,8 @@ User prompt / Tool call / Tool output / Model response
                        │
                        ▼
 ┌──────────────────────────────────────────────────┐
-│  Layer 2: Model Armor Cloud Scan (optional)      │
-│  Runs on all four hooks. Requires GCP.           │
+│  Layer 2: Model Armor Cloud Scan                 │
+│  Runs on all four hooks.                         │
 │  · Prompt injection & jailbreak detection        │
 │  · PII / sensitive data exposure (SDP)           │
 │  · Responsible AI (RAI) content filtering        │
